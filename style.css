@@ -351,16 +351,6 @@ body {
   color: var(--text);
 }
 
-.title-note {
-  font-size: 0.7rem;
-  font-weight: 400;
-  color: var(--text-dim);
-}
-
-.title-note.hidden {
-  display: none;
-}
-
 .card-collapse-toggle {
   font: inherit;
   font-weight: inherit;
@@ -444,6 +434,16 @@ body {
   background: rgba(77, 163, 255, 0.15);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* The native date input's box reads as blank/unlabeled at a glance (its
+   own placeholder segments only become obvious once you tap into it) -
+   this small icon signals "date picker" up front without needing to
+   spell that out in text there's no room for. */
+.date-input-label {
+  font-size: 0.85rem;
+  cursor: pointer;
+  line-height: 1;
 }
 
 .date-input {

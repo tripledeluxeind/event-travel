@@ -799,7 +799,6 @@ function initEventsTabs() {
 function updateEventsTitleForDate() {
   const [y, m, d] = selectedEventDate.split("-");
   document.getElementById("events-title").textContent = `Events on ${m}/${d}/${y}`;
-  document.getElementById("events-title-note").classList.add("hidden");
 }
 
 function clearEventsDate() {
@@ -807,7 +806,6 @@ function clearEventsDate() {
   document.getElementById("events-date").value = "";
   document.getElementById("events-date-clear").classList.add("hidden");
   document.getElementById("events-title").textContent = "Upcoming Events";
-  document.getElementById("events-title-note").classList.remove("hidden");
 }
 
 function initEventsDatePicker() {
