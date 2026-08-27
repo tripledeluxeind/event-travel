@@ -1,0 +1,12 @@
+{
+  "name": "travel-conditions-and-events",
+  "version": "1.0.0",
+  "description": "Multi-city weather + events dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
