@@ -242,26 +242,58 @@ body {
 /* Below ~600px there just isn't room for the brand text (left) and the
    absolutely-positioned date/clock/teasers corner (right) to sit side by
    side without genuinely overlapping - this was only ever tested at
-   desktop/tablet widths, where there's enough slack for both. On real
-   phone-width screens, stack the clock/teaser block below the brand
-   instead of floating it in the corner, removing the overlap entirely
-   rather than just shrinking things and hoping they never collide. */
+   desktop/tablet widths, where there's enough slack for both.
+   .clock-wrap itself is only a grouping element (it carries no layout of
+   its own beyond text-align), so making it `display: contents` lets its
+   two children act as direct flex items of .topbar: .datetime-wrap sits
+   on the same top row as .brand (so the date/clock still align with the
+   city name, per the previous fix's regression), while .teaser-wrap
+   takes flex-basis: 100% to force itself onto its own row below - the
+   part that actually varies in width enough to risk overlapping. */
 @media (max-width: 600px) {
   .topbar {
-    flex-direction: column;
+    flex-wrap: wrap;
     align-items: flex-start;
     padding: 14px 16px;
   }
 
   .clock-wrap {
-    position: static;
-    width: 100%;
+    display: contents;
+  }
+
+  .datetime-wrap,
+  .teaser-wrap {
+    text-align: right;
+  }
+
+  .teaser-wrap {
+    flex-basis: 100%;
     margin-top: 8px;
   }
 
   .now-playing,
   .next-event {
     max-width: 100%;
+  }
+
+  /* The viewport-height-locked, internal-scroll layout (see the .grid /
+     #card-weather / #card-events comments above) works well on desktop,
+     where Weather's content leaves plenty of room for Events. On a phone,
+     the header alone can eat a third of the screen, squeezing the Events
+     card down to a sliver that's nearly unusable. Below 600px, let the
+     page scroll normally instead, and give Events a real fixed-height
+     scroll area of its own regardless of how tall everything above it is. */
+  html, body {
+    height: auto;
+    overflow: visible;
+  }
+
+  .grid {
+    grid-template-rows: auto auto;
+  }
+
+  .card-body {
+    max-height: 55vh;
   }
 }
 
