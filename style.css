@@ -239,6 +239,32 @@ body {
   100% { filter: hue-rotate(360deg); }
 }
 
+/* Below ~600px there just isn't room for the brand text (left) and the
+   absolutely-positioned date/clock/teasers corner (right) to sit side by
+   side without genuinely overlapping - this was only ever tested at
+   desktop/tablet widths, where there's enough slack for both. On real
+   phone-width screens, stack the clock/teaser block below the brand
+   instead of floating it in the corner, removing the overlap entirely
+   rather than just shrinking things and hoping they never collide. */
+@media (max-width: 600px) {
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 14px 16px;
+  }
+
+  .clock-wrap {
+    position: static;
+    width: 100%;
+    margin-top: 8px;
+  }
+
+  .now-playing,
+  .next-event {
+    max-width: 100%;
+  }
+}
+
 .alert-banner {
   background: var(--danger);
   color: #1a0505;
