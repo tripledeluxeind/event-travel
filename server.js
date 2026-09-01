@@ -23,10 +23,13 @@ const MIME = {
   ".svg": "image/svg+xml",
 };
 
-// Fetching Sports/Food from Eventbrite roughly doubles a cold-cache page
-// load (it's a second full network round trip on top of the primary
-// source's own fetch) - flip this to true to bring the backfill back.
-const ENABLE_EVENTBRITE_BACKFILL = false;
+// Fills in Sports/Food listings (thin-to-nonexistent on every primary
+// source below, which are all nightlife/concert calendars) from Eventbrite.
+// This fetch is kicked off in parallel with each primary source's own
+// fetch (see getEventbriteBackfillPromise's callers) rather than after it,
+// so it adds roughly max(primary, eventbrite) to a cold-cache page load
+// instead of the sum of the two - flip to false to skip it entirely.
+const ENABLE_EVENTBRITE_BACKFILL = true;
 
 // ---- DoStuff Media events proxy (their JSON/HTML isn't CORS-enabled, so we
 // fetch + parse it server-side). Same markup/URL pattern across every city on
@@ -135,6 +138,13 @@ function parseDoStuffHtml(html) {
     const dateMatch = block.match(/<meta itemprop="startDate" datetime="(?<d>[^"]+)"/);
     const latMatch = block.match(/<meta itemprop="latitude" content="(?<lat>[^"]+)"/);
     const lonMatch = block.match(/<meta itemprop="longitude" content="(?<lon>[^"]+)"/);
+    // DoStuff's own "Buy Tickets" button already points straight at the real
+    // vendor (Ticketmaster, AXS, Dice, the venue's own site, etc., often via
+    // an affiliate redirect) - it's embedded as a schema.org Offer right in
+    // this same page, so linking to it costs nothing extra to fetch. Free/
+    // RSVP events have no Offer at all, hence the fallback to the DoStuff
+    // page elsewhere.
+    const offerMatch = block.match(/<span itemprop="offers"[^>]*>\s*<meta itemprop="url" content="(?<u>[^"]+)"/);
 
     events.push({
       title: htmlDecode(titleMatch.groups.t.trim()),
@@ -145,6 +155,7 @@ function parseDoStuffHtml(html) {
       category: m.groups.cat,
       lat: latMatch ? parseFloat(latMatch.groups.lat) : null,
       lon: lonMatch ? parseFloat(lonMatch.groups.lon) : null,
+      ticketUrl: offerMatch ? htmlDecode(offerMatch.groups.u) : null,
     });
   }
   return events;
@@ -186,10 +197,13 @@ async function getUpcomingEventsJson(domain, cityKey, specificDate) {
     const target = new Date(`${specificDate}T00:00:00`);
     if (isNaN(target)) return [];
 
-    const dayEvents = await getDoStuffDaysEvents(domain, [target]);
+    const [dayEvents, ebAll] = await Promise.all([
+      getDoStuffDaysEvents(domain, [target]),
+      getEventbriteBackfillPromise(cityKey),
+    ]);
     const unique = dedupeByPermalink(dayEvents);
     let matching = unique.filter((e) => e.startDate && dateOnly(e.startDate) === specificDate);
-    matching = await mergeEventbriteBackfill(matching, cityKey, specificDate, specificDate);
+    matching = mergeEventbriteResults(matching, ebAll, specificDate, specificDate);
     return sortByStartDate(matching);
   }
 
@@ -199,7 +213,10 @@ async function getUpcomingEventsJson(domain, cityKey, specificDate) {
   const todayStr = ymd(today);
   const tomorrowStr = ymd(tomorrow);
 
-  const all = await getDoStuffDaysEvents(domain, [today, tomorrow]);
+  const [all, ebAll] = await Promise.all([
+    getDoStuffDaysEvents(domain, [today, tomorrow]),
+    getEventbriteBackfillPromise(cityKey),
+  ]);
   let unique = dedupeByPermalink(all);
 
   // Some recurring/series listings carry their original debut date instead of
@@ -207,7 +224,7 @@ async function getUpcomingEventsJson(domain, cityKey, specificDate) {
   // drop anything dated before today so the list only shows real upcoming times.
   unique = unique.filter((e) => !e.startDate || new Date(e.startDate).getTime() >= today.getTime());
 
-  unique = await mergeEventbriteBackfill(unique, cityKey, todayStr, tomorrowStr);
+  unique = mergeEventbriteResults(unique, ebAll, todayStr, tomorrowStr);
   return sortByStartDate(unique);
 }
 
@@ -307,6 +324,11 @@ function parseRenoSceneHtml(html) {
 }
 
 async function getRenoSceneEventsJson(specificDate) {
+  // Started before the cache-freshness check below (and awaited later,
+  // alongside whatever that check decides to do) so this runs concurrently
+  // with the primary fetch instead of after it.
+  const ebPromise = getEventbriteBackfillPromise("reno");
+
   const cacheKey = "therenoscene";
   if (!isCacheFresh(cacheKey, 20)) {
     let succeeded = false;
@@ -329,7 +351,7 @@ async function getRenoSceneEventsJson(specificDate) {
   if (specificDate) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(specificDate)) return [];
     let matching = cached.filter((e) => e.startDate && dateOnly(e.startDate) === specificDate);
-    matching = await mergeEventbriteBackfill(matching, "reno", specificDate, specificDate);
+    matching = mergeEventbriteResults(matching, await ebPromise, specificDate, specificDate);
     return sortByStartDate(matching);
   }
 
@@ -345,7 +367,7 @@ async function getRenoSceneEventsJson(specificDate) {
   // Reno's own concert list can span weeks, but the Eventbrite backfill only
   // needs to cover the same near-term window every other city gets - it's
   // there to fill a Sports/Food gap, not to extend the horizon.
-  upcoming = await mergeEventbriteBackfill(upcoming, "reno", todayStr, tomorrowStr);
+  upcoming = mergeEventbriteResults(upcoming, await ebPromise, todayStr, tomorrowStr);
   return sortByStartDate(upcoming);
 }
 
@@ -474,9 +496,12 @@ async function getDtphxEventsForRange(startDate, endDate) {
 async function getDtphxEventsJson(specificDate) {
   if (specificDate) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(specificDate)) return [];
-    const dayEvents = await getDtphxEventsForRange(specificDate, specificDate);
+    const [dayEvents, ebAll] = await Promise.all([
+      getDtphxEventsForRange(specificDate, specificDate),
+      getEventbriteBackfillPromise("phx"),
+    ]);
     let matching = dayEvents.filter((e) => e.startDate && dateOnly(e.startDate) === specificDate);
-    matching = await mergeEventbriteBackfill(matching, "phx", specificDate, specificDate);
+    matching = mergeEventbriteResults(matching, ebAll, specificDate, specificDate);
     return sortByStartDate(matching);
   }
 
@@ -505,9 +530,12 @@ async function getDtphxEventsJson(specificDate) {
   const tomorrowStr = ymdUTC(new Date(Date.UTC(azYear, azMonth, azDay + 1)));
   const azMidnightTodayInstantMs = Date.UTC(azYear, azMonth, azDay, 7, 0, 0);
 
-  const all = await getDtphxEventsForRange(todayStr, tomorrowStr);
+  const [all, ebAll] = await Promise.all([
+    getDtphxEventsForRange(todayStr, tomorrowStr),
+    getEventbriteBackfillPromise("phx"),
+  ]);
   let upcoming = all.filter((e) => !e.startDate || new Date(e.startDate).getTime() >= azMidnightTodayInstantMs);
-  upcoming = await mergeEventbriteBackfill(upcoming, "phx", todayStr, tomorrowStr);
+  upcoming = mergeEventbriteResults(upcoming, ebAll, todayStr, tomorrowStr);
   return sortByStartDate(upcoming);
 }
 
@@ -621,16 +649,21 @@ async function getEventbriteEventsBatch(cityKey) {
   return categories.flatMap((c) => eventsCache.get(cacheKeyFor(c)) || []);
 }
 
-// Fills in Sports/Food from Eventbrite for whatever date range a primary
-// source just returned, skipping anything that's a same-title/same-day match
-// for an event the primary source already has (cheap de-dup - permalinks
-// never match across sources, so title+date is what's available).
-async function mergeEventbriteBackfill(existingEvents, cityKey, startDate, endDate) {
-  if (!ENABLE_EVENTBRITE_BACKFILL) return existingEvents;
-  if (!EVENTBRITE_CITY_SLUGS[cityKey]) return existingEvents;
+// Starts the Eventbrite fetch for a city. Call this *before* the primary
+// source's own fetch (and await both together, e.g. via Promise.all) so the
+// two run concurrently instead of back-to-back - awaiting this alone right
+// away would serialize them again and reintroduce the doubled load time.
+function getEventbriteBackfillPromise(cityKey) {
+  if (!ENABLE_EVENTBRITE_BACKFILL) return Promise.resolve([]);
+  if (!EVENTBRITE_CITY_SLUGS[cityKey]) return Promise.resolve([]);
+  return getEventbriteEventsBatch(cityKey);
+}
 
-  const ebAll = await getEventbriteEventsBatch(cityKey);
-
+// Merges already-fetched Eventbrite events into a primary source's results
+// for a given date range, skipping anything that's a same-title/same-day
+// match for an event the primary source already has (cheap de-dup -
+// permalinks never match across sources, so title+date is what's available).
+function mergeEventbriteResults(existingEvents, ebAll, startDate, endDate) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return existingEvents;
 
   const existingKeys = new Set();

@@ -339,7 +339,13 @@ function fmtNextEventTime(iso, hasTime = true) {
 // Most sources give a permalink relative to the city's domain; the
 // Eventbrite backfill gives a full absolute URL on a different domain, so
 // this only prefixes when the permalink isn't already a complete URL.
+// Prefer a direct ticket-purchase link over the source site's own event
+// page when one's available (currently just the DoStuff cities - their
+// listing already embeds the real vendor's URL, so this costs nothing
+// extra to use). Free/RSVP events have no ticketUrl, so they fall back
+// to the source page exactly as before.
 function eventLink(e) {
+  if (e.ticketUrl) return e.ticketUrl;
   const baseUrl = `https://${currentCity.domain}`;
   if (!e.permalink) return `${baseUrl}/events`;
   return /^https?:\/\//i.test(e.permalink) ? e.permalink : `${baseUrl}${e.permalink}`;

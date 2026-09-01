@@ -125,6 +125,13 @@ function Parse-DoStuffHtml {
     $dateMatch  = [regex]::Match($block, '<meta itemprop="startDate" datetime="(?<d>[^"]+)"')
     $latMatch   = [regex]::Match($block, '<meta itemprop="latitude" content="(?<lat>[^"]+)"')
     $lonMatch   = [regex]::Match($block, '<meta itemprop="longitude" content="(?<lon>[^"]+)"')
+    # DoStuff's own "Buy Tickets" button already points straight at the real
+    # vendor (Ticketmaster, AXS, Dice, the venue's own site, etc., often via
+    # an affiliate redirect) - it's embedded as a schema.org Offer right in
+    # this same page, so linking to it costs nothing extra to fetch. Free/
+    # RSVP events have no Offer at all, hence the fallback to the DoStuff
+    # page elsewhere.
+    $offerMatch = [regex]::Match($block, '<span itemprop="offers"[^>]*>\s*<meta itemprop="url" content="(?<u>[^"]+)"')
 
     $events += [PSCustomObject]@{
       title     = [System.Net.WebUtility]::HtmlDecode($titleMatch.Groups['t'].Value.Trim())
@@ -135,6 +142,7 @@ function Parse-DoStuffHtml {
       category  = $m.Groups['cat'].Value
       lat       = if ($latMatch.Success) { [double]$latMatch.Groups['lat'].Value } else { $null }
       lon       = if ($lonMatch.Success) { [double]$lonMatch.Groups['lon'].Value } else { $null }
+      ticketUrl = if ($offerMatch.Success) { [System.Net.WebUtility]::HtmlDecode($offerMatch.Groups['u'].Value) } else { $null }
     }
   }
   return $events
