@@ -46,9 +46,11 @@ const CITY_DOMAINS = {
   bna: "do615.com", // Nashville
   lax: "dolosangeles.com", // Los Angeles
   bay: "dothebay.com", // SF Bay Area
-  // Cities with no DoStuff Media presence (reno, phx) are intentionally left
-  // out - the request handler below returns an empty list for them rather
-  // than silently substituting a different city's events.
+  bos: "do617.com", // Boston
+  // Cities with no DoStuff Media presence (reno, phx, and the 19hz-only
+  // cities added below) are intentionally left out - the request handler
+  // below falls back to a 19hz/Eventbrite-only path for them instead of
+  // silently substituting a different city's events.
 };
 
 // IANA timezones per city - kept in sync with the CITIES list in app.js.
@@ -59,6 +61,8 @@ const CITY_TZ = {
   nyc: "America/New_York", chi: "America/Chicago", den: "America/Denver",
   bna: "America/Chicago", lax: "America/Los_Angeles", bay: "America/Los_Angeles",
   reno: "America/Los_Angeles", phx: "America/Phoenix", // Arizona - no daylight saving
+  bos: "America/New_York", atl: "America/New_York", mia: "America/New_York",
+  dc: "America/New_York", det: "America/Detroit", oma: "America/Chicago",
 };
 
 const eventsCache = new Map();
@@ -568,6 +572,8 @@ const EVENTBRITE_CITY_SLUGS = {
   sea: "wa--seattle", pdx: "or--portland", atx: "tx--austin", nyc: "ny--new-york",
   chi: "il--chicago", den: "co--denver", bna: "tn--nashville", lax: "ca--los-angeles",
   bay: "ca--san-francisco", reno: "nv--reno", phx: "az--phoenix",
+  bos: "ma--boston", atl: "ga--atlanta", mia: "fl--miami", dc: "dc--washington",
+  det: "mi--detroit", oma: "ne--omaha",
 };
 
 // Computes a real UTC offset (DST-aware) for a given IANA timezone at a
@@ -775,6 +781,22 @@ const NINETEEN_HZ_PAGES = {
   lax: { url: "https://19hz.info/eventlisting_LosAngeles.php", cityFilter: "Los Angeles" },
   bay: { url: "https://19hz.info/eventlisting_BayArea.php", cityFilter: null },
   phx: { url: "https://19hz.info/eventlisting_Phoenix.php", cityFilter: null },
+  bos: { url: "https://19hz.info/eventlisting_Massachusetts.php", cityFilter: ["Boston", "Cambridge"] },
+  atl: { url: "https://19hz.info/eventlisting_Atlanta.php", cityFilter: null },
+  mia: { url: "https://19hz.info/eventlisting_Miami.php", cityFilter: null },
+  // Page title is "Washington, DC / Maryland / Virginia" - a real multi-metro
+  // region (also carries Baltimore, Richmond), unlike the single-city pages
+  // above, so this needs the same kind of filter as Texas/Oregon/LosAngeles.
+  dc: { url: "https://19hz.info/eventlisting_DC.php", cityFilter: "Washington" },
+  det: { url: "https://19hz.info/eventlisting_Detroit.php", cityFilter: null },
+  // Despite the URL/title just saying "Iowa", the actual listing mixes in
+  // Omaha and Lincoln (Nebraska) alongside Des Moines/Iowa City/Cedar
+  // Rapids (Iowa) - genuinely two different states' worth of cities on one
+  // page. Omaha is the larger metro of the bunch, so it's the one this app
+  // represents; Lincoln (~55mi away, same state) is close enough to keep,
+  // same as any other metro-bleed page, while the Iowa cities (~130mi+,
+  // a different state) are filtered out.
+  oma: { url: "https://19hz.info/eventlisting_Iowa.php", cityFilter: ["Omaha", "Lincoln"] },
 };
 
 function parse19hzHtml(html, cityKey, cityFilter) {
@@ -810,7 +832,10 @@ function parse19hzHtml(html, cityKey, cityFilter) {
       venue = venueCityMatch[1].trim();
       city = venueCityMatch[2].trim();
     }
-    if (cityFilter && (!city || city.toLowerCase() !== cityFilter.toLowerCase())) continue;
+    if (cityFilter) {
+      const filters = Array.isArray(cityFilter) ? cityFilter : [cityFilter];
+      if (!city || !filters.some((f) => f.toLowerCase() === city.toLowerCase())) continue;
+    }
 
     let startDate = null;
     const timeParse = m[1].match(/(?<h>\d{1,2})(:(?<mn>\d{2}))?\s*(?<ap>[ap]m)/i);
@@ -874,6 +899,40 @@ async function get19hzEventsBatch(cityKey) {
 function get19hzBackfillPromise(cityKey) {
   if (!NINETEEN_HZ_PAGES[cityKey]) return Promise.resolve([]);
   return get19hzEventsBatch(cityKey);
+}
+
+// For a city with no primary/domain source at all (atl, mia, dc, det, oma -
+// added with 19hz-only coverage, a proper primary source to be researched
+// per city later), Eventbrite and 19hz are the *only* two sources instead of
+// one primary plus backfills - so neither is "trusted" over the other and
+// mergeBackfillResults' title+date de-dup is needed between them too, not
+// just against a primary list. Passing [] as its initial existingEvents
+// makes it behave as a plain date-range filter for the first source, then
+// the second call de-dupes the other source into that.
+async function getBackfillOnlyEventsJson(cityKey, specificDate) {
+  if (specificDate) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(specificDate)) return [];
+    const [ebAll, hzAll] = await Promise.all([
+      getEventbriteBackfillPromise(cityKey),
+      get19hzBackfillPromise(cityKey),
+    ]);
+    let matching = mergeBackfillResults([], ebAll, specificDate, specificDate);
+    matching = mergeBackfillResults(matching, hzAll, specificDate, specificDate);
+    return sortByStartDate(matching);
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = ymd(today);
+  const tomorrowStr = ymd(new Date(today.getTime() + 24 * 60 * 60 * 1000));
+
+  const [ebAll, hzAll] = await Promise.all([
+    getEventbriteBackfillPromise(cityKey),
+    get19hzBackfillPromise(cityKey),
+  ]);
+  let combined = mergeBackfillResults([], ebAll, todayStr, tomorrowStr);
+  combined = mergeBackfillResults(combined, hzAll, todayStr, tomorrowStr);
+  return sortByStartDate(combined);
 }
 
 // ---- Add-to-calendar (.ics) ----
@@ -959,6 +1018,8 @@ const server = http.createServer(async (req, res) => {
         rows = await getDtphxEventsJson(specificDate);
       } else if (domain) {
         rows = await getUpcomingEventsJson(domain, cityKey, specificDate);
+      } else if (NINETEEN_HZ_PAGES[cityKey] || EVENTBRITE_CITY_SLUGS[cityKey]) {
+        rows = await getBackfillOnlyEventsJson(cityKey, specificDate);
       } else {
         rows = [];
       }

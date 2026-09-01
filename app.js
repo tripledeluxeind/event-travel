@@ -3,9 +3,13 @@
 // through the local proxy in serve.ps1 since do206.com has no CORS support).
 
 // Keep `domain` in sync with $CityDomains in serve.ps1 for DoStuff Media
-// cities. A city with no scrapable source at all can omit `domain` and set
-// `eventsUrl` instead - the Events panel falls back to a link-out rather
-// than pretending to have a live feed.
+// cities. A city with no primary/domain source can omit `domain` and set
+// `eventsUrl` instead as its "browse everything" link-out - the Events
+// panel still fetches and shows real events for it (server-side, that's
+// whatever 19hz/Eventbrite backfill the city has configured), it just has
+// no single primary site to build direct links or a footer link from.
+// Omitting *both* `domain` and `eventsUrl` is what actually disables the
+// panel for a city with no source of any kind.
 const CITIES = [
   { key: "sea",  name: "Seattle, WA",     lat: 47.6062, lon: -122.3321, tz: "America/Los_Angeles", domain: "do206.com" },
   { key: "pdx",  name: "Portland, OR",    lat: 45.5152, lon: -122.6784, tz: "America/Los_Angeles", domain: "dopdx.com" },
@@ -20,6 +24,19 @@ const CITIES = [
   // Arizona doesn't observe daylight saving, so America/Phoenix is a fixed
   // UTC-7 year-round - unlike every other tz in this list.
   { key: "phx",  name: "Phoenix, AZ",     lat: 33.4484, lon: -112.0740, tz: "America/Phoenix",     domain: "dtphx.org" },
+  { key: "bos",  name: "Boston, MA",      lat: 42.3601, lon: -71.0589,  tz: "America/New_York",    domain: "do617.com" },
+  // atl/mia/dc/det/oma have no primary source yet (no DoStuff Media
+  // presence, and domain-guessing for a bespoke source came up dry or
+  // incompatible for each - see the 19hz backfill notes in server.js) -
+  // 19hz (EDM) + Eventbrite (Sports/Food) carry these on their own for now,
+  // with eventsUrl as the "browse everything" link-out since there's no
+  // single site that has it all. A proper primary source is a separate
+  // future task per city.
+  { key: "atl",  name: "Atlanta, GA",     lat: 33.7490, lon: -84.3880,  tz: "America/New_York",    eventsUrl: "https://19hz.info/eventlisting_Atlanta.php" },
+  { key: "mia",  name: "Miami, FL",       lat: 25.7617, lon: -80.1918,  tz: "America/New_York",    eventsUrl: "https://19hz.info/eventlisting_Miami.php" },
+  { key: "dc",   name: "Washington, DC",  lat: 38.9072, lon: -77.0369,  tz: "America/New_York",    eventsUrl: "https://19hz.info/eventlisting_DC.php" },
+  { key: "det",  name: "Detroit, MI",     lat: 42.3314, lon: -83.0458,  tz: "America/Detroit",     eventsUrl: "https://19hz.info/eventlisting_Detroit.php" },
+  { key: "oma",  name: "Omaha, NE",       lat: 41.2565, lon: -95.9345,  tz: "America/Chicago",     eventsUrl: "https://19hz.info/eventlisting_Iowa.php" },
 ];
 
 function loadSavedCity() {
@@ -489,9 +506,13 @@ function fmtNextEventTime(iso, hasTime = true, tz = currentCity.tz) {
 // to the source page exactly as before.
 function eventLink(e) {
   if (e.ticketUrl) return e.ticketUrl;
-  const baseUrl = `https://${currentCity.domain}`;
-  if (!e.permalink) return `${baseUrl}/events`;
-  return /^https?:\/\//i.test(e.permalink) ? e.permalink : `${baseUrl}${e.permalink}`;
+  // 19hz/Eventbrite permalinks are always already-absolute URLs, so this
+  // relative-prefixing path is only ever exercised by DoStuff cities
+  // (which always have a domain) - the fallback below just needs to not
+  // blow up for a domain-less city on the off chance an event has neither.
+  if (!e.permalink) return currentCity.domain ? `https://${currentCity.domain}/events` : currentCity.eventsUrl || "#";
+  if (/^https?:\/\//i.test(e.permalink)) return e.permalink;
+  return `https://${currentCity.domain}${e.permalink}`;
 }
 
 // Renders a teaser row as a fixed-width viewport with a static label, so
@@ -621,7 +642,8 @@ function isStaleToday(e) {
 // category tab - called both after a fresh fetch and on a tab click, so a
 // tab switch never needs to hit the network again.
 function renderEventsList(rows) {
-  const baseUrl = `https://${currentCity.domain}`;
+  const browseUrl = currentCity.domain ? `https://${currentCity.domain}/events` : currentCity.eventsUrl;
+  const browseLabel = currentCity.domain || "local events calendar";
   const current = rows.filter(e => !isStaleToday(e));
   const filtered = selectedCategory === "all"
     ? current
@@ -632,7 +654,7 @@ function renderEventsList(rows) {
     const activeTab = document.querySelector(`.events-tab[data-cat="${selectedCategory}"]`);
     const categoryNote = selectedCategory !== "all" && activeTab ? ` in ${activeTab.textContent}` : "";
     document.getElementById("events-body").innerHTML =
-      `<div class="empty-state">No events found${dateNote}${categoryNote}. <a class="ext-link" href="${baseUrl}/events" target="_blank" rel="noopener">Browse ${escapeHtml(currentCity.domain)} ↗</a></div>`;
+      `<div class="empty-state">No events found${dateNote}${categoryNote}. <a class="ext-link" href="${browseUrl}" target="_blank" rel="noopener">Browse ${escapeHtml(browseLabel)} ↗</a></div>`;
     return;
   }
 
@@ -671,9 +693,13 @@ function renderEventsList(rows) {
 }
 
 async function loadEvents() {
-  if (!currentCity.domain) {
+  // A city with genuinely no source at all (no domain, and nothing for the
+  // server to fall back to) skips the fetch entirely - every city currently
+  // in CITIES has at least a domain or an eventsUrl-backed 19hz/Eventbrite
+  // feed, so this is only a safety net for a future half-added city.
+  if (!currentCity.domain && !currentCity.eventsUrl) {
     document.getElementById("events-body").innerHTML =
-      `<div class="empty-state">No live event feed for ${escapeHtml(currentCity.name)} yet.<br><a class="ext-link" href="${currentCity.eventsUrl}" target="_blank" rel="noopener">Browse local events ↗</a></div>`;
+      `<div class="empty-state">No live event feed for ${escapeHtml(currentCity.name)} yet.</div>`;
     lastUpcomingRows = [];
     currentEventsRows = [];
     setTeaserContent(document.getElementById("now-playing"), "", "");
@@ -684,7 +710,8 @@ async function loadEvents() {
   }
 
   const signal = cityAbortController.signal;
-  const baseUrl = `https://${currentCity.domain}`;
+  const browseUrl = currentCity.domain ? `https://${currentCity.domain}/events` : currentCity.eventsUrl;
+  const browseLabel = currentCity.domain || "local events calendar";
   try {
     const rows = await fetchJSON(eventsEndpoint(), signal);
     if (!selectedEventDate) {
@@ -703,7 +730,7 @@ async function loadEvents() {
       ? `This page was opened as a local file (${location.href}). Events need serve.ps1 - open <strong>http://localhost:8837</strong> in your browser instead of double-clicking index.html.`
       : "Live event list needs the local server (serve.ps1) running. Start it, then reload this page.";
     document.getElementById("events-body").innerHTML =
-      `<div class="empty-state">${hint}<br><a class="ext-link" href="${baseUrl}/events" target="_blank" rel="noopener">Browse events on ${escapeHtml(currentCity.domain)} ↗</a></div>`;
+      `<div class="empty-state">${hint}<br><a class="ext-link" href="${browseUrl}" target="_blank" rel="noopener">Browse events on ${escapeHtml(browseLabel)} ↗</a></div>`;
   }
 }
 

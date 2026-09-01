@@ -40,9 +40,11 @@ $CityDomains = @{
   bna = "do615.com"          # Nashville
   lax = "dolosangeles.com"   # Los Angeles
   bay = "dothebay.com"       # SF Bay Area
-  # Cities with no DoStuff Media presence (e.g. reno) are intentionally left
-  # out - the request handler below returns an empty list for them rather
-  # than silently substituting a different city's events.
+  bos = "do617.com"          # Boston
+  # Cities with no DoStuff Media presence (reno, phx, and the 19hz-only
+  # cities added below) are intentionally left out - the request handler
+  # below falls back to a 19hz/Eventbrite-only path for them instead of
+  # silently substituting a different city's events.
 }
 
 $script:eventsCache = @{}
@@ -514,6 +516,8 @@ $EventbriteCitySlugs = @{
   sea = "wa--seattle"; pdx = "or--portland"; atx = "tx--austin"; nyc = "ny--new-york"
   chi = "il--chicago"; den = "co--denver"; bna = "tn--nashville"; lax = "ca--los-angeles"
   bay = "ca--san-francisco"; reno = "nv--reno"; phx = "az--phoenix"
+  bos = "ma--boston"; atl = "ga--atlanta"; mia = "fl--miami"; dc = "dc--washington"
+  det = "mi--detroit"; oma = "ne--omaha"
 }
 
 # Windows tz ids (not IANA - this runs on Windows PowerShell) used only to
@@ -523,6 +527,10 @@ $CityWindowsTz = @{
   nyc = "Eastern Standard Time"; chi = "Central Standard Time"; den = "Mountain Standard Time"
   bna = "Central Standard Time"; lax = "Pacific Standard Time"; bay = "Pacific Standard Time"
   reno = "Pacific Standard Time"; phx = "US Mountain Standard Time" # Arizona - no daylight saving
+  # Windows has no separate Detroit zone (unlike IANA's America/Detroit) - it
+  # shares "Eastern Standard Time" with New York, same DST rules either way.
+  bos = "Eastern Standard Time"; atl = "Eastern Standard Time"; mia = "Eastern Standard Time"
+  dc = "Eastern Standard Time"; det = "Eastern Standard Time"; oma = "Central Standard Time"
 }
 
 function Get-CityUtcOffsetString {
@@ -760,10 +768,26 @@ $NineteenHzPages = @{
   lax = @{ Url = "https://19hz.info/eventlisting_LosAngeles.php"; CityFilter = "Los Angeles" }
   bay = @{ Url = "https://19hz.info/eventlisting_BayArea.php"; CityFilter = $null }
   phx = @{ Url = "https://19hz.info/eventlisting_Phoenix.php"; CityFilter = $null }
+  bos = @{ Url = "https://19hz.info/eventlisting_Massachusetts.php"; CityFilter = @("Boston", "Cambridge") }
+  atl = @{ Url = "https://19hz.info/eventlisting_Atlanta.php"; CityFilter = $null }
+  mia = @{ Url = "https://19hz.info/eventlisting_Miami.php"; CityFilter = $null }
+  # Page title is "Washington, DC / Maryland / Virginia" - a real multi-metro
+  # region (also carries Baltimore, Richmond), unlike the single-city pages
+  # above, so this needs the same kind of filter as Texas/Oregon/LosAngeles.
+  dc = @{ Url = "https://19hz.info/eventlisting_DC.php"; CityFilter = "Washington" }
+  det = @{ Url = "https://19hz.info/eventlisting_Detroit.php"; CityFilter = $null }
+  # Despite the URL/title just saying "Iowa", the actual listing mixes in
+  # Omaha and Lincoln (Nebraska) alongside Des Moines/Iowa City/Cedar Rapids
+  # (Iowa) - genuinely two different states' worth of cities on one page.
+  # Omaha is the larger metro of the bunch, so it's the one this app
+  # represents; Lincoln (~55mi away, same state) is close enough to keep,
+  # same as any other metro-bleed page, while the Iowa cities (~130mi+, a
+  # different state) are filtered out.
+  oma = @{ Url = "https://19hz.info/eventlisting_Iowa.php"; CityFilter = @("Omaha", "Lincoln") }
 }
 
 function Parse-19hzHtml {
-  param([string]$html, [string]$cityKey, [string]$cityFilter)
+  param([string]$html, [string]$cityKey, [object]$cityFilter)
   $events = @()
   $starts = [regex]::Matches($html, "<tr><td>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun): [A-Za-z]{3} \d{1,2}\s*<br\s*/>\s*\((?<time>[^)]*)\)</td>")
   for ($i = 0; $i -lt $starts.Count; $i++) {
@@ -794,7 +818,10 @@ function Parse-19hzHtml {
       $venue = $venueCityMatch.Groups['venue'].Value.Trim()
       $city = $venueCityMatch.Groups['city'].Value.Trim()
     }
-    if ($cityFilter -and ((-not $city) -or $city.ToLower() -ne $cityFilter.ToLower())) { continue }
+    if ($cityFilter) {
+      $filters = @($cityFilter)
+      if ((-not $city) -or -not ($filters | Where-Object { $_.ToLower() -eq $city.ToLower() })) { continue }
+    }
 
     $startDate = $null
     $timeParse = [regex]::Match($m.Groups['time'].Value, '(?<h>\d{1,2})(:(?<mn>\d{2}))?\s*(?<ap>[AaPp][Mm])')
@@ -879,6 +906,50 @@ function Merge-19hzBackfill {
   }
 
   return @($existingEvents) + @($fresh)
+}
+
+# For a city with no primary/domain source at all (atl, mia, dc, det, oma -
+# added with 19hz-only coverage, a proper primary source to be researched
+# per city later), Eventbrite and 19hz are the *only* two sources instead of
+# one primary plus backfills - so neither is "trusted" over the other and
+# the title+date de-dup used by Merge-EventbriteBackfill/Merge-19hzBackfill
+# is needed between them too, not just against a primary list. Passing an
+# empty array as the first call's existingEvents makes it behave as a plain
+# date-range filter for Eventbrite, then the second call de-dupes 19hz into
+# that.
+function Get-BackfillOnlyEventsJson {
+  param([string]$cityKey, [string]$specificDate = $null)
+
+  if ($specificDate) {
+    $target = $null
+    try { $target = [datetime]::ParseExact($specificDate, "yyyy-MM-dd", $null) } catch {}
+    if (-not $target) { return "[]" }
+
+    $matching = Merge-EventbriteBackfill -existingEvents @() -cityKey $cityKey -startDate $specificDate -endDate $specificDate
+    $matching = Merge-19hzBackfill -existingEvents $matching -cityKey $cityKey -startDate $specificDate -endDate $specificDate
+    $sorted = $matching | Sort-Object { [datetime]$_.startDate }
+
+    if ($sorted.Count -eq 0) { return "[]" }
+    $json = $sorted | ConvertTo-Json -Depth 3
+    if ($sorted.Count -eq 1) { $json = "[$json]" }
+    return $json
+  }
+
+  $today = Get-Date
+  $todayStart = $today.Date
+  $tomorrow = $today.AddDays(1)
+
+  $combined = Merge-EventbriteBackfill -existingEvents @() -cityKey $cityKey -startDate $todayStart.ToString("yyyy-MM-dd") -endDate $tomorrow.ToString("yyyy-MM-dd")
+  $combined = Merge-19hzBackfill -existingEvents $combined -cityKey $cityKey -startDate $todayStart.ToString("yyyy-MM-dd") -endDate $tomorrow.ToString("yyyy-MM-dd")
+
+  $sorted = $combined | Sort-Object {
+    if ($_.startDate) { try { [datetime]$_.startDate } catch { [datetime]::MaxValue } } else { [datetime]::MaxValue }
+  }
+
+  if ($sorted.Count -eq 0) { return "[]" }
+  $json = $sorted | ConvertTo-Json -Depth 3
+  if ($sorted.Count -eq 1) { $json = "[$json]" }
+  return $json
 }
 
 # ---- Add-to-calendar (.ics) ----
@@ -981,6 +1052,8 @@ while ($listener.IsListening) {
         Get-DtphxEventsJson -specificDate $specificDate
       } elseif ($domain) {
         Get-UpcomingEventsJson -domain $domain -cityKey $cityKey -specificDate $specificDate
+      } elseif ($NineteenHzPages.ContainsKey($cityKey) -or $EventbriteCitySlugs.ContainsKey($cityKey)) {
+        Get-BackfillOnlyEventsJson -cityKey $cityKey -specificDate $specificDate
       } else {
         "[]"
       }
