@@ -5,10 +5,15 @@ $listener.Prefixes.Add("http://localhost:$port/")
 $listener.Start()
 Write-Output "Serving $root on http://localhost:$port/"
 
-# Fetching Sports/Food from Eventbrite roughly doubles a cold-cache page
-# load (it's a second full network round trip on top of the primary
-# source's own fetch) - flip this to $true to bring the backfill back.
-$EnableEventbriteBackfill = $false
+# Fetching Sports/Food from Eventbrite adds a second full network round
+# trip on top of the primary source's own fetch. server.js now kicks this
+# off *concurrently* with the primary fetch (see getEventbriteBackfillPromise
+# there), so it only costs max(primary, eventbrite) - this PowerShell
+# version was never restructured to match, so here it still runs
+# sequentially after the primary fetch and costs the sum of both. Since
+# Render only runs server.js, that's just a slower local dev experience,
+# not a difference in what's actually deployed.
+$EnableEventbriteBackfill = $true
 
 $mime = @{
   ".html" = "text/html"
