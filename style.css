@@ -298,15 +298,13 @@ body {
 
 /* A sibling of .grid, not a grid item - it just stacks above Weather in
    the page's normal flex flow, so it never needs to participate in the
-   Weather/Events 1fr row-sizing logic below. Hidden entirely (not just
-   collapsed) until at least one event is checked, so it costs nothing
-   for anyone who never uses the feature. */
+   Weather/Events 1fr row-sizing logic below. Always visible (an empty
+   state explains the checkbox-in-Events mechanism rather than the card
+   just never appearing for a first-time visitor). */
 .ticket-card {
   flex: 0 0 auto;
   margin: 14px 14px 0;
 }
-
-.ticket-card.hidden { display: none; }
 
 #tickets-body {
   padding: 10px 14px 14px;

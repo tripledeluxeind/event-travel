@@ -103,10 +103,12 @@ function fmtTicketWhen(t) {
 // Prunes anything that's already started (no point featuring - or even
 // keeping - a "got tix" reminder for a show you're already at or missed),
 // then shows the soonest remaining one prominently with anything further
-// out listed compactly below. Hides the whole card when the list is empty
-// rather than leaving a purposeless empty card on screen. Called after
-// every checkbox toggle and on the same 30s tick that re-checks the
-// header teasers, so it advances live as events start.
+// out listed compactly below. Shows an explanatory placeholder rather than
+// hiding the card when the list is empty, so a first-time visitor
+// discovers the checkbox-in-the-Events-card mechanism rather than never
+// seeing this card at all. Called after every checkbox toggle and on the
+// same 30s tick that re-checks the header teasers, so it advances live as
+// events start.
 // Nothing in this app tracks a real event *end* time (most sources never
 // give one), so every calendar entry just assumes a 2-hour block from the
 // known start - an approximation, but a far better default than an
@@ -161,15 +163,12 @@ function renderTicketsCard() {
   ticketedEvents = ticketedEvents.filter(t => !t.startDate || new Date(t.startDate).getTime() >= now);
   if (ticketedEvents.length !== before) saveTicketedEvents();
 
-  const card = document.getElementById("card-tickets");
   const body = document.getElementById("tickets-body");
 
   if (!ticketedEvents.length) {
-    card.classList.add("hidden");
-    body.innerHTML = "";
+    body.innerHTML = `<div class="ticket-empty">Select events you've bought tickets for in the Events card below.</div>`;
     return;
   }
-  card.classList.remove("hidden");
 
   const sorted = [...ticketedEvents].sort((a, b) => {
     const ta = a.startDate ? new Date(a.startDate).getTime() : Infinity;
