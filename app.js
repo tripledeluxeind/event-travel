@@ -117,15 +117,14 @@ function ticsUtcStamp(d) {
   return d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
 }
 
-function icsEscape(str) {
-  return String(str).replace(/([,;\\])/g, "\\$1");
-}
-
 // Google/Outlook just need a plain URL (no auth, no popup blocked by
 // following it), so those are regular links. Apple Calendar (and anything
 // else that can import a file) has no such URL scheme - a .ics file is the
-// universal fallback, built as a data: URI and downloaded via a throwaway
-// <a download>, since there's no server round-trip to generate it from.
+// universal fallback. That used to be built right here as a data: URI
+// opened via a throwaway <a download>, but iOS Safari doesn't support the
+// download attribute at all, so tapping it silently did nothing on an
+// iPhone - it's now a real same-origin URL the server generates on the
+// fly (see /api/ics in server.js), which is what actually works there.
 function buildCalendarLinks(t) {
   const start = new Date(t.startDate);
   const end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
@@ -136,25 +135,9 @@ function buildCalendarLinks(t) {
 
   const google = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${startStamp}/${endStamp}&location=${location}`;
   const outlook = `https://outlook.live.com/calendar/0/deeplink/compose?path=/calendar/action/compose&rru=addevent&subject=${title}&startdt=${encodeURIComponent(start.toISOString())}&enddt=${encodeURIComponent(end.toISOString())}&location=${location}`;
+  const ics = `/api/ics?title=${title}&start=${encodeURIComponent(t.startDate)}&venue=${location}&key=${encodeURIComponent(t.key)}`;
 
-  const ics = [
-    "BEGIN:VCALENDAR",
-    "VERSION:2.0",
-    "PRODID:-//Travel Conditions and Events//EN",
-    "BEGIN:VEVENT",
-    `UID:${encodeURIComponent(t.key)}@travel-conditions-events`,
-    `DTSTAMP:${ticsUtcStamp(new Date())}`,
-    `DTSTART:${startStamp}`,
-    `DTEND:${endStamp}`,
-    `SUMMARY:${icsEscape(t.title)}`,
-    t.venue ? `LOCATION:${icsEscape(t.venue)}` : null,
-    "END:VEVENT",
-    "END:VCALENDAR",
-  ].filter(Boolean).join("\r\n");
-  const icsUrl = `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
-  const filename = `${t.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.ics`;
-
-  return { google, outlook, icsUrl, filename };
+  return { google, outlook, ics };
 }
 
 function renderTicketsCard() {
@@ -178,12 +161,11 @@ function renderTicketsCard() {
   const [featured, ...rest] = sorted;
   const elsewhere = t => (t.cityName && t.cityName !== currentCity.name ? ` · ${escapeHtml(t.cityName)}` : "");
   const calBtn = t => {
-    const { google, outlook, icsUrl, filename } = buildCalendarLinks(t);
+    const { google, outlook, ics } = buildCalendarLinks(t);
     return `<button type="button" class="cal-btn"
         data-google="${escapeHtml(google)}"
         data-outlook="${escapeHtml(outlook)}"
-        data-ics="${escapeHtml(icsUrl)}"
-        data-filename="${escapeHtml(filename)}"
+        data-ics="${escapeHtml(ics)}"
         title="Add to calendar" aria-label="Add ${escapeHtml(t.title)} to calendar">🗓️+</button>`;
   };
 
@@ -824,17 +806,8 @@ function initCalPicker() {
   calPickerEl.addEventListener("click", ev => {
     const btn = ev.target.closest("button[data-key]");
     if (!btn) return;
-    if (btn.dataset.key === "ics") {
-      const a = document.createElement("a");
-      a.href = calPickerEl.dataset.ics;
-      a.download = calPickerEl.dataset.filename || "event.ics";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    } else {
-      const url = calPickerEl.dataset[btn.dataset.key];
-      if (url) window.open(url, "_blank", "noopener");
-    }
+    const url = calPickerEl.dataset[btn.dataset.key];
+    if (url) window.open(url, "_blank", "noopener");
     hideCalPicker();
   });
 
@@ -874,7 +847,6 @@ function toggleCalPicker(btn) {
   calPickerEl.dataset.google = btn.dataset.google;
   calPickerEl.dataset.outlook = btn.dataset.outlook;
   calPickerEl.dataset.ics = btn.dataset.ics;
-  calPickerEl.dataset.filename = btn.dataset.filename;
   calPickerEl.classList.remove("hidden");
   positionPopoverNear(calPickerEl, btn);
 }

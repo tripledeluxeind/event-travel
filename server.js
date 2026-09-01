@@ -732,12 +732,76 @@ function mergeEventbriteResults(existingEvents, ebAll, startDate, endDate) {
   return [...existingEvents, ...fresh];
 }
 
+// ---- Add-to-calendar (.ics) ----
+//
+// Google/Outlook have their own "quick add" URLs the client can link to
+// directly, but there's no such URL scheme for Apple Calendar - the only
+// reliable cross-platform mechanism is a real .ics file. That used to be
+// built client-side as a data: URI opened via a throwaway <a download>,
+// but iOS Safari doesn't support the download attribute at all (a
+// long-standing, well-documented gap), so tapping it silently did
+// nothing on an iPhone. A genuine same-origin URL serving real
+// Content-Type/Content-Disposition headers is what actually works there,
+// so this builds the .ics server-side instead and the client just links
+// to it like any other URL.
+
+function icsUtcStamp(date) {
+  return date.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+}
+
+function icsEscape(str) {
+  return String(str).replace(/([,;\\])/g, "\\$1");
+}
+
+// Nothing tracks a real event *end* time (most sources never give one),
+// so this assumes a 2-hour block from the known start - an approximation,
+// but a far better default than a zero-length calendar event.
+function buildIcsContent(params) {
+  const title = params.get("title") || "Event";
+  const venue = params.get("venue") || "";
+  const key = params.get("key") || title;
+  const start = new Date(params.get("start"));
+  if (isNaN(start)) return null;
+  const end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+
+  return [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Travel Conditions and Events//EN",
+    "BEGIN:VEVENT",
+    `UID:${encodeURIComponent(key)}@travel-conditions-events`,
+    `DTSTAMP:${icsUtcStamp(new Date())}`,
+    `DTSTART:${icsUtcStamp(start)}`,
+    `DTEND:${icsUtcStamp(end)}`,
+    `SUMMARY:${icsEscape(title)}`,
+    venue ? `LOCATION:${icsEscape(venue)}` : null,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].filter(Boolean).join("\r\n");
+}
+
 // ---- static file + API server ----
 
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
+
+    if (pathname === "/api/ics") {
+      const ics = buildIcsContent(url.searchParams);
+      if (!ics) {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end("Invalid event data");
+        return;
+      }
+      const filename = `${(url.searchParams.get("title") || "event").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.ics`;
+      res.writeHead(200, {
+        "Content-Type": "text/calendar; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${filename}"`,
+      });
+      res.end(ics);
+      return;
+    }
 
     if (pathname === "/api/events") {
       const cityKey = url.searchParams.get("city");

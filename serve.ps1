@@ -725,6 +725,60 @@ function Merge-EventbriteBackfill {
   return @($existingEvents) + @($fresh)
 }
 
+# ---- Add-to-calendar (.ics) ----
+#
+# Google/Outlook have their own "quick add" URLs the client can link to
+# directly, but there's no such URL scheme for Apple Calendar - the only
+# reliable cross-platform mechanism is a real .ics file. That used to be
+# built client-side as a data: URI opened via a throwaway <a download>,
+# but iOS Safari doesn't support the download attribute at all (a
+# long-standing, well-documented gap), so tapping it silently did nothing
+# on an iPhone. A genuine same-origin URL serving real Content-Type/
+# Content-Disposition headers is what actually works there, so this builds
+# the .ics server-side instead and the client just links to it like any
+# other URL.
+
+function Get-IcsUtcStamp {
+  param([datetime]$utcDate)
+  return $utcDate.ToString("yyyyMMddTHHmmss") + "Z"
+}
+
+function Get-IcsEscape {
+  param([string]$text)
+  return $text -replace '([,;\\])', '\$1'
+}
+
+# Nothing tracks a real event *end* time (most sources never give one), so
+# this assumes a 2-hour block from the known start - an approximation, but
+# a far better default than a zero-length calendar event.
+function Build-IcsContent {
+  param([System.Collections.Specialized.NameValueCollection]$query)
+  $title = if ($query["title"]) { $query["title"] } else { "Event" }
+  $venue = $query["venue"]
+  $key = if ($query["key"]) { $query["key"] } else { $title }
+
+  $start = $null
+  try { $start = ([System.DateTimeOffset]::Parse($query["start"])).UtcDateTime } catch {}
+  if (-not $start) { return $null }
+  $end = $start.AddHours(2)
+
+  $lines = @(
+    "BEGIN:VCALENDAR"
+    "VERSION:2.0"
+    "PRODID:-//Travel Conditions and Events//EN"
+    "BEGIN:VEVENT"
+    "UID:$([uri]::EscapeDataString($key))@travel-conditions-events"
+    "DTSTAMP:$(Get-IcsUtcStamp -utcDate (Get-Date).ToUniversalTime())"
+    "DTSTART:$(Get-IcsUtcStamp -utcDate $start)"
+    "DTEND:$(Get-IcsUtcStamp -utcDate $end)"
+    "SUMMARY:$(Get-IcsEscape -text $title)"
+  )
+  if ($venue) { $lines += "LOCATION:$(Get-IcsEscape -text $venue)" }
+  $lines += "END:VEVENT"
+  $lines += "END:VCALENDAR"
+  return ($lines -join "`r`n")
+}
+
 # ---- static file + API server ----
 #
 # A single request must never be able to bring the whole server down. In
@@ -746,7 +800,22 @@ while ($listener.IsListening) {
   try {
     $path = $request.Url.LocalPath
 
-    if ($path -eq "/api/events") {
+    if ($path -eq "/api/ics") {
+      $ics = Build-IcsContent -query $request.QueryString
+      if (-not $ics) {
+        $response.StatusCode = 400
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes("Invalid event data")
+        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+      } else {
+        $titleParam = if ($request.QueryString["title"]) { $request.QueryString["title"] } else { "event" }
+        $filename = ($titleParam -replace '[^a-zA-Z0-9]+', '-').ToLower() + ".ics"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($ics)
+        $response.ContentType = "text/calendar; charset=utf-8"
+        $response.Headers.Add("Content-Disposition", "attachment; filename=`"$filename`"")
+        $response.ContentLength64 = $bytes.Length
+        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+      }
+    } elseif ($path -eq "/api/events") {
       $cityKey = $request.QueryString["city"]
       $specificDate = $request.QueryString["date"]
       $domain = $CityDomains[$cityKey]
