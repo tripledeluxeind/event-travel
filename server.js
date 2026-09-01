@@ -562,10 +562,9 @@ const EVENTBRITE_CITY_SLUGS = {
   bay: "ca--san-francisco", reno: "nv--reno", phx: "az--phoenix",
 };
 
-// Computes a city's real UTC offset (DST-aware) for a given instant, using
-// its IANA timezone via Intl - no external tz library needed.
-function getCityUtcOffsetString(cityKey, date) {
-  const tz = CITY_TZ[cityKey];
+// Computes a real UTC offset (DST-aware) for a given IANA timezone at a
+// given instant, using Intl - no external tz library needed.
+function getUtcOffsetString(tz, date) {
   if (!tz) return "+00:00";
   try {
     const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" }).formatToParts(date);
@@ -580,44 +579,94 @@ function getCityUtcOffsetString(cityKey, date) {
   }
 }
 
-function parseEventbriteJson(html, category, cityKey) {
-  const events = [];
-  const blockRe = /<script type="application\/ld\+json">\s*(?<json>[\[{][\s\S]*?[\]}])\s*<\/script>/g;
-  const seenUrls = new Set();
-  for (const block of html.matchAll(blockRe)) {
-    let parsed;
-    try {
-      parsed = JSON.parse(block.groups.json);
-    } catch {
+// Finds `{...}` immediately after the first occurrence of `afterMarker`,
+// scanning for the matching closing brace by depth-counting rather than a
+// regex - the object is hundreds of KB of arbitrarily nested data, so a
+// regex can't reliably tell where it actually ends. String contents are
+// tracked (respecting \" escapes) so a stray { or } inside a title or
+// description doesn't throw the count off.
+function extractBalancedJson(text, afterMarker) {
+  const markerIdx = text.indexOf(afterMarker);
+  if (markerIdx === -1) return null;
+  const start = text.indexOf("{", markerIdx + afterMarker.length);
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
       continue;
     }
-    const items = parsed.itemListElement;
-    if (!items) continue;
-    for (const li of items) {
-      const item = li.item;
-      // Breadcrumb ItemLists share this same shape but their entries have no
-      // startDate - that's what distinguishes an actual event row here.
-      if (!item || !item.startDate || !item.name || !item.url) continue;
-      if (seenUrls.has(item.url)) continue;
-      seenUrls.add(item.url);
-
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(item.startDate)) continue;
-      const eventDate = new Date(`${item.startDate}T00:00:00Z`);
-      const offsetStr = getCityUtcOffsetString(cityKey, eventDate);
-      const startDate = `${item.startDate}T00:00${offsetStr}`;
-
-      events.push({
-        title: item.name,
-        permalink: item.url,
-        venue: item.location && item.location.name ? item.location.name : null,
-        city: null,
-        startDate,
-        category,
-        lat: item.location && item.location.geo && item.location.geo.latitude != null ? parseFloat(item.location.geo.latitude) : null,
-        lon: item.location && item.location.geo && item.location.geo.longitude != null ? parseFloat(item.location.geo.longitude) : null,
-        hasTime: false,
-      });
+    if (ch === '"') { inString = true; continue; }
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
     }
+  }
+  return null;
+}
+
+// The page's SEO-facing JSON-LD only gives a bare date, no time - but the
+// same page also embeds window.__SERVER_DATA__, the actual data its React
+// frontend hydrates from, which carries the real start_time/end_time and
+// each event's own IANA timezone directly (discovered by noticing an
+// event's own Eventbrite page showed a specific time the browse page's
+// JSON-LD didn't have). That eliminates the need for the hasTime=false
+// date-only fallback for anything this shape covers.
+function parseEventbriteJson(html, category, cityKey) {
+  const jsonStr = extractBalancedJson(html, "__SERVER_DATA__");
+  if (!jsonStr) return [];
+  let data;
+  try {
+    data = JSON.parse(jsonStr);
+  } catch {
+    return [];
+  }
+  const results = data?.search_data?.events?.results;
+  if (!Array.isArray(results)) return [];
+
+  const events = [];
+  const seenUrls = new Set();
+  for (const item of results) {
+    if (!item.start_date || !item.name || !item.url) continue;
+    if (seenUrls.has(item.url)) continue;
+    seenUrls.add(item.url);
+
+    const tz = item.timezone || CITY_TZ[cityKey];
+    const venue = item.primary_venue;
+    const address = venue?.address;
+    let startDate;
+    let hasTime = true;
+    if (item.start_time && /^\d{4}-\d{2}-\d{2}$/.test(item.start_date) && /^\d{2}:\d{2}/.test(item.start_time)) {
+      const offsetStr = getUtcOffsetString(tz, new Date(`${item.start_date}T${item.start_time.slice(0, 5)}:00Z`));
+      startDate = `${item.start_date}T${item.start_time.slice(0, 5)}${offsetStr}`;
+    } else if (/^\d{4}-\d{2}-\d{2}$/.test(item.start_date)) {
+      // Defensive fallback - every event sampled while building this had a
+      // start_time, but fall back to date-only rather than dropping the
+      // event entirely if a future one somehow doesn't.
+      const offsetStr = getUtcOffsetString(tz, new Date(`${item.start_date}T00:00:00Z`));
+      startDate = `${item.start_date}T00:00${offsetStr}`;
+      hasTime = false;
+    } else {
+      continue;
+    }
+
+    events.push({
+      title: item.name,
+      permalink: item.url,
+      venue: venue?.name || null,
+      city: address?.city || null,
+      startDate,
+      category,
+      lat: address?.latitude != null ? parseFloat(address.latitude) : null,
+      lon: address?.longitude != null ? parseFloat(address.longitude) : null,
+      ...(hasTime ? {} : { hasTime: false }),
+    });
   }
   return events;
 }

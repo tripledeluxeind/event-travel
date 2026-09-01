@@ -539,43 +539,106 @@ function Get-CityUtcOffsetString {
   }
 }
 
+# Finds "{...}" immediately after the first occurrence of $afterMarker,
+# scanning for the matching closing brace by depth-counting rather than a
+# regex - the object is hundreds of KB of arbitrarily nested data, so a
+# regex can't reliably tell where it actually ends. String contents are
+# tracked (respecting \" escapes) so a stray { or } inside a title or
+# description doesn't throw the count off.
+function Get-BalancedJsonSubstring {
+  param([string]$text, [string]$afterMarker)
+  $markerIdx = $text.IndexOf($afterMarker)
+  if ($markerIdx -lt 0) { return $null }
+  $start = $text.IndexOf('{', $markerIdx + $afterMarker.Length)
+  if ($start -lt 0) { return $null }
+  $depth = 0
+  $inString = $false
+  $escaped = $false
+  for ($i = $start; $i -lt $text.Length; $i++) {
+    $ch = $text[$i]
+    if ($inString) {
+      if ($escaped) { $escaped = $false }
+      elseif ($ch -eq '\') { $escaped = $true }
+      elseif ($ch -eq '"') { $inString = $false }
+      continue
+    }
+    if ($ch -eq '"') { $inString = $true; continue }
+    if ($ch -eq '{') { $depth++ }
+    elseif ($ch -eq '}') {
+      $depth--
+      if ($depth -eq 0) { return $text.Substring($start, $i - $start + 1) }
+    }
+  }
+  return $null
+}
+
+# The page's SEO-facing JSON-LD only gives a bare date, no time - but the
+# same page also embeds window.__SERVER_DATA__, the actual data its React
+# frontend hydrates from, which carries the real start_time/end_time
+# directly (discovered by noticing an event's own Eventbrite page showed a
+# specific time the browse page's JSON-LD didn't have). That eliminates
+# the need for the hasTime=false date-only fallback for anything this
+# shape covers. Each result also carries its own IANA timezone, but
+# Windows PowerShell's TimeZoneInfo can't resolve those directly (only
+# Windows tz IDs) - Get-CityUtcOffsetString's existing city-level mapping
+# is used instead, which is equivalent since every result here is already
+# scoped to one browsed city.
 function Parse-EventbriteJson {
   param([string]$html, [string]$category, [string]$cityKey)
-  $events = @()
-  $blocks = [regex]::Matches($html, '<script type="application/ld\+json">\s*(?<json>[\[\{].*?[\]\}])\s*</script>', [System.Text.RegularExpressions.RegexOptions]::Singleline)
-  $seenUrls = @{}
-  foreach ($block in $blocks) {
-    $parsed = $null
-    try { $parsed = $block.Groups['json'].Value | ConvertFrom-Json } catch { continue }
-    $items = $parsed.itemListElement
-    if (-not $items) { continue }
-    foreach ($li in $items) {
-      $item = $li.item
-      # Breadcrumb ItemLists share this same shape but their entries have no
-      # startDate - that's what distinguishes an actual event row here.
-      if (-not $item -or -not $item.startDate -or -not $item.name -or -not $item.url) { continue }
-      if ($seenUrls.ContainsKey($item.url)) { continue }
-      $seenUrls[$item.url] = $true
+  $jsonStr = Get-BalancedJsonSubstring -text $html -afterMarker "__SERVER_DATA__"
+  if (-not $jsonStr) { return @() }
+  $data = $null
+  try { $data = $jsonStr | ConvertFrom-Json } catch { return @() }
+  $results = $data.search_data.events.results
+  if (-not $results) { return @() }
 
-      $startDate = $null
+  $events = @()
+  $seenUrls = @{}
+  foreach ($item in $results) {
+    if (-not $item.start_date -or -not $item.name -or -not $item.url) { continue }
+    if ($seenUrls.ContainsKey($item.url)) { continue }
+    $seenUrls[$item.url] = $true
+
+    $startDate = $null
+    $hasTime = $true
+    if ($item.start_time -and $item.start_date -match '^\d{4}-\d{2}-\d{2}$' -and $item.start_time -match '^\d{2}:\d{2}') {
       try {
-        $eventDate = [datetime]::ParseExact($item.startDate, "yyyy-MM-dd", $null)
+        $timePart = $item.start_time.Substring(0, 5)
+        $eventDateTime = [datetime]::ParseExact("$($item.start_date) $timePart", "yyyy-MM-dd HH:mm", $null)
+        $offsetStr = Get-CityUtcOffsetString -cityKey $cityKey -date $eventDateTime
+        $startDate = $eventDateTime.ToString("yyyy-MM-ddTHH:mm") + $offsetStr
+      } catch { continue }
+    } elseif ($item.start_date -match '^\d{4}-\d{2}-\d{2}$') {
+      # Defensive fallback - every event sampled while building this had a
+      # start_time, but fall back to date-only rather than dropping the
+      # event entirely if a future one somehow doesn't.
+      try {
+        $eventDate = [datetime]::ParseExact($item.start_date, "yyyy-MM-dd", $null)
         $offsetStr = Get-CityUtcOffsetString -cityKey $cityKey -date $eventDate
         $startDate = $eventDate.ToString("yyyy-MM-ddT00:00") + $offsetStr
+        $hasTime = $false
       } catch { continue }
-
-      $events += [PSCustomObject]@{
-        title     = $item.name
-        permalink = $item.url
-        venue     = if ($item.location -and $item.location.name) { $item.location.name } else { $null }
-        city      = $null
-        startDate = $startDate
-        category  = $category
-        lat       = if ($item.location -and $item.location.geo -and $item.location.geo.latitude) { [double]$item.location.geo.latitude } else { $null }
-        lon       = if ($item.location -and $item.location.geo -and $item.location.geo.longitude) { [double]$item.location.geo.longitude } else { $null }
-        hasTime   = $false
-      }
+    } else {
+      continue
     }
+
+    $venue = $item.primary_venue
+    $address = if ($venue) { $venue.address } else { $null }
+
+    $obj = [PSCustomObject]@{
+      title     = $item.name
+      permalink = $item.url
+      venue     = if ($venue -and $venue.name) { $venue.name } else { $null }
+      city      = if ($address -and $address.city) { $address.city } else { $null }
+      startDate = $startDate
+      category  = $category
+      lat       = if ($address -and $address.latitude) { [double]$address.latitude } else { $null }
+      lon       = if ($address -and $address.longitude) { [double]$address.longitude } else { $null }
+    }
+    if (-not $hasTime) {
+      $obj | Add-Member -NotePropertyName hasTime -NotePropertyValue $false
+    }
+    $events += $obj
   }
   return $events
 }
