@@ -500,12 +500,14 @@ async function getDtphxEventsForRange(startDate, endDate) {
 async function getDtphxEventsJson(specificDate) {
   if (specificDate) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(specificDate)) return [];
-    const [dayEvents, ebAll] = await Promise.all([
+    const [dayEvents, ebAll, hzAll] = await Promise.all([
       getDtphxEventsForRange(specificDate, specificDate),
       getEventbriteBackfillPromise("phx"),
+      get19hzBackfillPromise("phx"),
     ]);
     let matching = dayEvents.filter((e) => e.startDate && dateOnly(e.startDate) === specificDate);
     matching = mergeBackfillResults(matching, ebAll, specificDate, specificDate);
+    matching = mergeBackfillResults(matching, hzAll, specificDate, specificDate);
     return sortByStartDate(matching);
   }
 
@@ -534,12 +536,14 @@ async function getDtphxEventsJson(specificDate) {
   const tomorrowStr = ymdUTC(new Date(Date.UTC(azYear, azMonth, azDay + 1)));
   const azMidnightTodayInstantMs = Date.UTC(azYear, azMonth, azDay, 7, 0, 0);
 
-  const [all, ebAll] = await Promise.all([
+  const [all, ebAll, hzAll] = await Promise.all([
     getDtphxEventsForRange(todayStr, tomorrowStr),
     getEventbriteBackfillPromise("phx"),
+    get19hzBackfillPromise("phx"),
   ]);
   let upcoming = all.filter((e) => !e.startDate || new Date(e.startDate).getTime() >= azMidnightTodayInstantMs);
   upcoming = mergeBackfillResults(upcoming, ebAll, todayStr, tomorrowStr);
+  upcoming = mergeBackfillResults(upcoming, hzAll, todayStr, tomorrowStr);
   return sortByStartDate(upcoming);
 }
 
@@ -740,9 +744,9 @@ function mergeBackfillResults(existingEvents, freshAll, startDate, endDate) {
   return [...existingEvents, ...fresh];
 }
 
-// ---- 19hz.info (Seattle-only EDM/electronic backfill) ----
+// ---- 19hz.info (EDM/electronic backfill) ----
 //
-// Seattle's page lists two very different things in one table: real dated
+// Each city page lists two very different things in one table: real dated
 // one-off shows (bare <tr>, with a hidden <div class='shrink'>YYYY/MM/DD</div>
 // giving a clean machine-readable date) and recurring monthly/weekly club
 // nights (<tr class='even'/'odd'>, dated only as text like "1st Mondays" -
@@ -750,13 +754,32 @@ function mergeBackfillResults(existingEvents, freshAll, startDate, endDate) {
 // a whole recurrence-rule parser for informal English phrases, so rows
 // without that shrink date (the recurring section) are simply skipped.
 // Confirmed via a real overlap check that this is worth doing at all: some
-// bigger shows (e.g. "Tape B") are already on do206.com too - mergeBackfillResults'
-// title+date de-dup (already proven for the Eventbrite backfill) handles that.
+// bigger shows (e.g. "Tape B" in Seattle) are already on the DoStuff site
+// too - mergeBackfillResults' title+date de-dup (already proven for the
+// Eventbrite backfill) handles that.
+//
+// Some pages are genuinely one metro (Seattle, Bay Area, Chicago, Denver,
+// Phoenix) and Tacoma/Oakland/etc.-style bleed from nearby suburbs is fine
+// to just include, same as any other source. Others are explicitly a
+// multi-metro region under one page ("Los Angeles / Southern California"
+// mixes in San Diego; "Texas" mixes Dallas/Houston/San Antonio in with
+// Austin; "Portland / Oregon" mixes in Eugene/Bend) - those get a
+// `cityFilter` so only rows whose parsed venue-city actually matches the
+// one city this app represents come through.
+const NINETEEN_HZ_PAGES = {
+  sea: { url: "https://19hz.info/eventlisting_Seattle.php", cityFilter: null },
+  pdx: { url: "https://19hz.info/eventlisting_ORE.php", cityFilter: "Portland" },
+  atx: { url: "https://19hz.info/eventlisting_Texas.php", cityFilter: "Austin" },
+  chi: { url: "https://19hz.info/eventlisting_CHI.php", cityFilter: null },
+  den: { url: "https://19hz.info/eventlisting_Denver.php", cityFilter: null },
+  lax: { url: "https://19hz.info/eventlisting_LosAngeles.php", cityFilter: "Los Angeles" },
+  bay: { url: "https://19hz.info/eventlisting_BayArea.php", cityFilter: null },
+  phx: { url: "https://19hz.info/eventlisting_Phoenix.php", cityFilter: null },
+};
 
-const NINETEEN_HZ_SEATTLE_URL = "https://19hz.info/eventlisting_Seattle.php";
-
-function parse19hzSeattleHtml(html) {
+function parse19hzHtml(html, cityKey, cityFilter) {
   const events = [];
+  const tz = CITY_TZ[cityKey];
   const startRe = /<tr><td>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun): [A-Za-z]{3} \d{1,2}\s*<br\s*\/>\s*\(([^)]*)\)<\/td>/g;
   const starts = [...html.matchAll(startRe)];
   for (let i = 0; i < starts.length; i++) {
@@ -765,7 +788,11 @@ function parse19hzSeattleHtml(html) {
     const blockEnd = i + 1 < starts.length ? starts[i + 1].index : Math.min(html.length, blockStart + 2000);
     const block = html.slice(blockStart, blockEnd);
 
-    const linkMatch = block.match(/<a href='(?<url>[^']+)'>(?<title>[^<]+)<\/a> @ (?<venue>[^<]+)<td>(?<genre>[^<]*)<\/td>/);
+    // Most cities' pages have the link directly followed by " @ Venue",
+    // but Chicago's wraps the title in an extra <div class='eventCol'> -
+    // the optional (?:<\/div>)? absorbs that without needing a separate
+    // per-city regex variant.
+    const linkMatch = block.match(/<a href='(?<url>[^']+)'>(?<title>[^<]+)<\/a>(?:<\/div>)? @ (?<venue>[^<]+)<td>(?<genre>[^<]*)<\/td>/);
     if (!linkMatch) continue;
 
     // The recurring section (no shrink date) never reaches this far since
@@ -773,6 +800,17 @@ function parse19hzSeattleHtml(html) {
     // if a row is somehow missing it rather than guessing a date.
     const dateMatch = block.match(/<div class='shrink'>(?<y>\d{4})\/(?<mo>\d{2})\/(?<d>\d{2})<\/div>/);
     if (!dateMatch) continue;
+
+    // "Venue Name (City, ST)" or "Venue Name (City)" - split when it
+    // matches that shape, otherwise just use the whole thing as venue.
+    let venue = linkMatch.groups.venue.trim();
+    let city = null;
+    const venueCityMatch = venue.match(/^(.*?)\s*\(([^,()]+)(?:,\s*[A-Z]{2})?\)$/);
+    if (venueCityMatch) {
+      venue = venueCityMatch[1].trim();
+      city = venueCityMatch[2].trim();
+    }
+    if (cityFilter && (!city || city.toLowerCase() !== cityFilter.toLowerCase())) continue;
 
     let startDate = null;
     const timeParse = m[1].match(/(?<h>\d{1,2})(:(?<mn>\d{2}))?\s*(?<ap>[ap]m)/i);
@@ -786,24 +824,15 @@ function parse19hzSeattleHtml(html) {
       const { y, mo, d } = dateMatch.groups;
       // Anchored to a UTC instant on the right calendar day (not a naive
       // local-time string, which Node would parse using the *server's*
-      // timezone rather than Seattle's) purely so getUtcOffsetString can
-      // look up the correct PDT/PST offset for that date - same trick
-      // already used for Eventbrite's date-only entries above.
+      // timezone rather than the event's own city) purely so
+      // getUtcOffsetString can look up the correct DST-aware offset for
+      // that date - same trick already used for Eventbrite's date-only
+      // entries above.
       const referenceInstant = new Date(`${y}-${mo}-${d}T${pad(hour)}:${pad(minute)}:00Z`);
-      const offsetStr = getUtcOffsetString("America/Los_Angeles", referenceInstant);
+      const offsetStr = getUtcOffsetString(tz, referenceInstant);
       startDate = `${y}-${mo}-${d}T${pad(hour)}:${pad(minute)}${offsetStr}`;
     }
     if (!startDate) continue;
-
-    // "Venue Name (City, ST)" or "Venue Name (City)" - split when it
-    // matches that shape, otherwise just use the whole thing as venue.
-    let venue = linkMatch.groups.venue.trim();
-    let city = null;
-    const venueCityMatch = venue.match(/^(.*?)\s*\(([^,()]+)(?:,\s*[A-Z]{2})?\)$/);
-    if (venueCityMatch) {
-      venue = venueCityMatch[1].trim();
-      city = venueCityMatch[2].trim();
-    }
 
     events.push({
       title: htmlDecode(linkMatch.groups.title.trim()),
@@ -819,18 +848,20 @@ function parse19hzSeattleHtml(html) {
   return events;
 }
 
-async function get19hzSeattleEventsBatch() {
-  const cacheKey = "19hz|seattle";
+async function get19hzEventsBatch(cityKey) {
+  const page = NINETEEN_HZ_PAGES[cityKey];
+  if (!page) return [];
+  const cacheKey = `19hz|${cityKey}`;
   if (!isCacheFresh(cacheKey, 20)) {
     let succeeded = false;
     let parsed = [];
     try {
-      const res = await fetch(NINETEEN_HZ_SEATTLE_URL, {
+      const res = await fetch(page.url, {
         headers: { "User-Agent": "Mozilla/5.0", Accept: "text/html" },
         signal: AbortSignal.timeout(15000),
       });
       const html = await res.text();
-      parsed = parse19hzSeattleHtml(html);
+      parsed = parse19hzHtml(html, cityKey, page.cityFilter);
       succeeded = true;
     } catch {
       parsed = [];
@@ -841,8 +872,8 @@ async function get19hzSeattleEventsBatch() {
 }
 
 function get19hzBackfillPromise(cityKey) {
-  if (cityKey !== "sea") return Promise.resolve([]);
-  return get19hzSeattleEventsBatch();
+  if (!NINETEEN_HZ_PAGES[cityKey]) return Promise.resolve([]);
+  return get19hzEventsBatch(cityKey);
 }
 
 // ---- Add-to-calendar (.ics) ----

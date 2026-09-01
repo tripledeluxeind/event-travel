@@ -461,6 +461,7 @@ function Get-DtphxEventsJson {
       $_.startDate -and (([datetime]$_.startDate).Date -eq $target.Date)
     }
     $matching = Merge-EventbriteBackfill -existingEvents $matching -cityKey "phx" -startDate $specificDate -endDate $specificDate
+    $matching = Merge-19hzBackfill -existingEvents $matching -cityKey "phx" -startDate $specificDate -endDate $specificDate
     $matching = $matching | Sort-Object { [datetime]$_.startDate }
 
     if ($matching.Count -eq 0) { return "[]" }
@@ -486,6 +487,7 @@ function Get-DtphxEventsJson {
     -not $_.startDate -or (([datetime]$_.startDate) -ge $todayStart)
   }
   $upcoming = Merge-EventbriteBackfill -existingEvents $upcoming -cityKey "phx" -startDate $phoenixToday.ToString("yyyy-MM-dd") -endDate $phoenixTomorrow.ToString("yyyy-MM-dd")
+  $upcoming = Merge-19hzBackfill -existingEvents $upcoming -cityKey "phx" -startDate $phoenixToday.ToString("yyyy-MM-dd") -endDate $phoenixTomorrow.ToString("yyyy-MM-dd")
   $upcoming = $upcoming | Sort-Object {
     if ($_.startDate) { try { [datetime]$_.startDate } catch { [datetime]::MaxValue } } else { [datetime]::MaxValue }
   }
@@ -727,9 +729,9 @@ function Merge-EventbriteBackfill {
   return @($existingEvents) + @($fresh)
 }
 
-# ---- 19hz.info (Seattle-only EDM/electronic backfill) ----
+# ---- 19hz.info (EDM/electronic backfill) ----
 #
-# Seattle's page lists two very different things in one table: real dated
+# Each city page lists two very different things in one table: real dated
 # one-off shows (bare <tr>, with a hidden <div class='shrink'>YYYY/MM/DD</div>
 # giving a clean machine-readable date) and recurring monthly/weekly club
 # nights (<tr class='even'/'odd'>, dated only as text like "1st Mondays" -
@@ -737,13 +739,31 @@ function Merge-EventbriteBackfill {
 # a whole recurrence-rule parser for informal English phrases, so rows
 # without that shrink date (the recurring section) are simply skipped.
 # Confirmed via a real overlap check that this is worth doing at all: some
-# bigger shows (e.g. "Tape B") are already on do206.com too - the same
-# title+date de-dup already proven for the Eventbrite backfill handles that.
+# bigger shows (e.g. "Tape B" in Seattle) are already on the DoStuff site
+# too - the same title+date de-dup already proven for the Eventbrite
+# backfill handles that.
+#
+# Some pages are genuinely one metro (Seattle, Bay Area, Chicago, Denver,
+# Phoenix) and Tacoma/Oakland/etc.-style bleed from nearby suburbs is fine
+# to just include, same as any other source. Others are explicitly a
+# multi-metro region under one page ("Los Angeles / Southern California"
+# mixes in San Diego; "Texas" mixes Dallas/Houston/San Antonio in with
+# Austin; "Portland / Oregon" mixes in Eugene/Bend) - those get a
+# CityFilter so only rows whose parsed venue-city actually matches the one
+# city this app represents come through.
+$NineteenHzPages = @{
+  sea = @{ Url = "https://19hz.info/eventlisting_Seattle.php"; CityFilter = $null }
+  pdx = @{ Url = "https://19hz.info/eventlisting_ORE.php"; CityFilter = "Portland" }
+  atx = @{ Url = "https://19hz.info/eventlisting_Texas.php"; CityFilter = "Austin" }
+  chi = @{ Url = "https://19hz.info/eventlisting_CHI.php"; CityFilter = $null }
+  den = @{ Url = "https://19hz.info/eventlisting_Denver.php"; CityFilter = $null }
+  lax = @{ Url = "https://19hz.info/eventlisting_LosAngeles.php"; CityFilter = "Los Angeles" }
+  bay = @{ Url = "https://19hz.info/eventlisting_BayArea.php"; CityFilter = $null }
+  phx = @{ Url = "https://19hz.info/eventlisting_Phoenix.php"; CityFilter = $null }
+}
 
-$NineteenHzSeattleUrl = "https://19hz.info/eventlisting_Seattle.php"
-
-function Parse-19hzSeattleHtml {
-  param([string]$html)
+function Parse-19hzHtml {
+  param([string]$html, [string]$cityKey, [string]$cityFilter)
   $events = @()
   $starts = [regex]::Matches($html, "<tr><td>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun): [A-Za-z]{3} \d{1,2}\s*<br\s*/>\s*\((?<time>[^)]*)\)</td>")
   for ($i = 0; $i -lt $starts.Count; $i++) {
@@ -752,7 +772,11 @@ function Parse-19hzSeattleHtml {
     $blockEnd = if ($i + 1 -lt $starts.Count) { $starts[$i + 1].Index } else { [Math]::Min($html.Length, $blockStart + 2000) }
     $block = $html.Substring($blockStart, $blockEnd - $blockStart)
 
-    $linkMatch = [regex]::Match($block, "<a href='(?<url>[^']+)'>(?<title>[^<]+)</a> @ (?<venue>[^<]+)<td>(?<genre>[^<]*)</td>")
+    # Most cities' pages have the link directly followed by " @ Venue", but
+    # Chicago's wraps the title in an extra <div class='eventCol'> - the
+    # optional (?:</div>)? absorbs that without needing a separate
+    # per-city regex variant.
+    $linkMatch = [regex]::Match($block, "<a href='(?<url>[^']+)'>(?<title>[^<]+)</a>(?:</div>)? @ (?<venue>[^<]+)<td>(?<genre>[^<]*)</td>")
     if (-not $linkMatch.Success) { continue }
 
     # The recurring section (no shrink date) never reaches this far since
@@ -760,6 +784,17 @@ function Parse-19hzSeattleHtml {
     # if a row is somehow missing it rather than guessing a date.
     $dateMatch = [regex]::Match($block, "<div class='shrink'>(?<y>\d{4})/(?<mo>\d{2})/(?<d>\d{2})</div>")
     if (-not $dateMatch.Success) { continue }
+
+    # "Venue Name (City, ST)" or "Venue Name (City)" - split when it
+    # matches that shape, otherwise just use the whole thing as venue.
+    $venue = $linkMatch.Groups['venue'].Value.Trim()
+    $city = $null
+    $venueCityMatch = [regex]::Match($venue, '^(?<venue>.*?)\s*\((?<city>[^,()]+)(?:,\s*[A-Z]{2})?\)$')
+    if ($venueCityMatch.Success) {
+      $venue = $venueCityMatch.Groups['venue'].Value.Trim()
+      $city = $venueCityMatch.Groups['city'].Value.Trim()
+    }
+    if ($cityFilter -and ((-not $city) -or $city.ToLower() -ne $cityFilter.ToLower())) { continue }
 
     $startDate = $null
     $timeParse = [regex]::Match($m.Groups['time'].Value, '(?<h>\d{1,2})(:(?<mn>\d{2}))?\s*(?<ap>[AaPp][Mm])')
@@ -774,21 +809,11 @@ function Parse-19hzSeattleHtml {
       $d = $dateMatch.Groups['d'].Value
       try {
         $eventDateTime = [datetime]::ParseExact("$y-$mo-$d $($hour.ToString('D2')):$($minute.ToString('D2'))", "yyyy-MM-dd HH:mm", $null)
-        $offsetStr = Get-CityUtcOffsetString -cityKey "sea" -date $eventDateTime
+        $offsetStr = Get-CityUtcOffsetString -cityKey $cityKey -date $eventDateTime
         $startDate = $eventDateTime.ToString("yyyy-MM-ddTHH:mm") + $offsetStr
       } catch {}
     }
     if (-not $startDate) { continue }
-
-    # "Venue Name (City, ST)" or "Venue Name (City)" - split when it
-    # matches that shape, otherwise just use the whole thing as venue.
-    $venue = $linkMatch.Groups['venue'].Value.Trim()
-    $city = $null
-    $venueCityMatch = [regex]::Match($venue, '^(?<venue>.*?)\s*\((?<city>[^,()]+)(?:,\s*[A-Z]{2})?\)$')
-    if ($venueCityMatch.Success) {
-      $venue = $venueCityMatch.Groups['venue'].Value.Trim()
-      $city = $venueCityMatch.Groups['city'].Value.Trim()
-    }
 
     $events += [PSCustomObject]@{
       title     = [System.Net.WebUtility]::HtmlDecode($linkMatch.Groups['title'].Value.Trim())
@@ -804,14 +829,17 @@ function Parse-19hzSeattleHtml {
   return $events
 }
 
-function Get-19hzSeattleEventsBatch {
-  $cacheKey = "19hz|seattle"
+function Get-19hzEventsBatch {
+  param([string]$cityKey)
+  $page = $NineteenHzPages[$cityKey]
+  if (-not $page) { return @() }
+  $cacheKey = "19hz|$cityKey"
   if (-not (Test-EventsCacheFresh -cacheKey $cacheKey -ttlMinutes 20)) {
     $succeeded = $false
     $parsed = @()
     try {
-      $resp = Invoke-WebRequest -Uri $NineteenHzSeattleUrl -UseBasicParsing -Headers @{ "User-Agent" = "Mozilla/5.0"; "Accept" = "text/html" } -TimeoutSec 15
-      $parsed = Parse-19hzSeattleHtml -html $resp.Content
+      $resp = Invoke-WebRequest -Uri $page.Url -UseBasicParsing -Headers @{ "User-Agent" = "Mozilla/5.0"; "Accept" = "text/html" } -TimeoutSec 15
+      $parsed = Parse-19hzHtml -html $resp.Content -cityKey $cityKey -cityFilter $page.CityFilter
       $succeeded = $true
     } catch {
       $parsed = @()
@@ -823,9 +851,9 @@ function Get-19hzSeattleEventsBatch {
 
 function Merge-19hzBackfill {
   param([array]$existingEvents, [string]$cityKey, [string]$startDate, [string]$endDate)
-  if ($cityKey -ne "sea") { return $existingEvents }
+  if (-not $NineteenHzPages.ContainsKey($cityKey)) { return $existingEvents }
 
-  $hzAll = Get-19hzSeattleEventsBatch
+  $hzAll = Get-19hzEventsBatch -cityKey $cityKey
 
   $rangeStart = $null; $rangeEnd = $null
   try {
