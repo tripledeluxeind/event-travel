@@ -9,6 +9,7 @@
   --warn: #ffb020;
   --danger: #ff4d5e;
   --wind-green: #3ddc84;
+  --humidity-yellow: #ffe14d;
   --radius: 14px;
 }
 
@@ -325,6 +326,19 @@ body {
   border-radius: 10px;
   background: rgba(77, 163, 255, 0.12);
   border: 1px solid var(--accent);
+  animation: ticket-glow-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes ticket-glow-pulse {
+  0%, 100% { box-shadow: 0 0 10px 1px rgba(255, 225, 77, 0.35); }
+  50%      { box-shadow: 0 0 20px 4px rgba(255, 225, 77, 0.65); }
+}
+
+.ticket-featured-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .ticket-featured .ticket-title,
@@ -332,6 +346,13 @@ body {
   font-size: 1.15rem;
   font-weight: 700;
   color: var(--wind-green);
+}
+
+.ticket-featured .ticket-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ticket-featured .ticket-when {
@@ -348,8 +369,8 @@ body {
 
 .ticket-row {
   display: flex;
-  justify-content: space-between;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
   padding: 5px 0;
   font-size: 0.82rem;
 }
@@ -364,6 +385,11 @@ body {
   white-space: nowrap;
 }
 
+.ticket-row .ticket-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .ticket-row .ticket-when {
   color: var(--text-dim);
   flex-shrink: 0;
@@ -376,6 +402,28 @@ body {
   height: 15px;
   flex-shrink: 0;
   cursor: pointer;
+}
+
+/* Add-to-calendar trigger next to each event in My Tickets - opens the
+   same shared popover (#cal-picker, styled via .nav-picker) the venue
+   button already uses for its directions-app choices. */
+.cal-btn {
+  font-family: inherit;
+  flex-shrink: 0;
+  background: rgba(255, 225, 77, 0.14);
+  border: 1px solid var(--panel-border);
+  color: var(--humidity-yellow);
+  border-radius: 6px;
+  font-size: 0.78rem;
+  padding: 3px 6px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.cal-btn:hover,
+.cal-btn:focus-visible {
+  filter: brightness(1.2);
+  outline: none;
 }
 
 /* Both rows are auto-height now (see the body comment above) - Weather and
@@ -644,7 +692,7 @@ body {
 
 /* Wind / Humidity / Direction, in that fixed order from app.js. */
 .wx-meta div:nth-child(1) { color: var(--wind-green); }
-.wx-meta div:nth-child(2) { color: #ffe14d; }
+.wx-meta div:nth-child(2) { color: var(--humidity-yellow); }
 .wx-meta div:nth-child(3) { color: #ff4d5e; }
 
 .wx-forecast {

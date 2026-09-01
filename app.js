@@ -107,6 +107,54 @@ function fmtTicketWhen(t) {
 // rather than leaving a purposeless empty card on screen. Called after
 // every checkbox toggle and on the same 30s tick that re-checks the
 // header teasers, so it advances live as events start.
+// Nothing in this app tracks a real event *end* time (most sources never
+// give one), so every calendar entry just assumes a 2-hour block from the
+// known start - an approximation, but a far better default than an
+// instantaneous (zero-length) calendar event.
+function ticsUtcStamp(d) {
+  return d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+}
+
+function icsEscape(str) {
+  return String(str).replace(/([,;\\])/g, "\\$1");
+}
+
+// Google/Outlook just need a plain URL (no auth, no popup blocked by
+// following it), so those are regular links. Apple Calendar (and anything
+// else that can import a file) has no such URL scheme - a .ics file is the
+// universal fallback, built as a data: URI and downloaded via a throwaway
+// <a download>, since there's no server round-trip to generate it from.
+function buildCalendarLinks(t) {
+  const start = new Date(t.startDate);
+  const end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+  const startStamp = ticsUtcStamp(start);
+  const endStamp = ticsUtcStamp(end);
+  const title = encodeURIComponent(t.title);
+  const location = encodeURIComponent(t.venue || "");
+
+  const google = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${startStamp}/${endStamp}&location=${location}`;
+  const outlook = `https://outlook.live.com/calendar/0/deeplink/compose?path=/calendar/action/compose&rru=addevent&subject=${title}&startdt=${encodeURIComponent(start.toISOString())}&enddt=${encodeURIComponent(end.toISOString())}&location=${location}`;
+
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Travel Conditions and Events//EN",
+    "BEGIN:VEVENT",
+    `UID:${encodeURIComponent(t.key)}@travel-conditions-events`,
+    `DTSTAMP:${ticsUtcStamp(new Date())}`,
+    `DTSTART:${startStamp}`,
+    `DTEND:${endStamp}`,
+    `SUMMARY:${icsEscape(t.title)}`,
+    t.venue ? `LOCATION:${icsEscape(t.venue)}` : null,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].filter(Boolean).join("\r\n");
+  const icsUrl = `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
+  const filename = `${t.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.ics`;
+
+  return { google, outlook, icsUrl, filename };
+}
+
 function renderTicketsCard() {
   const now = Date.now();
   const before = ticketedEvents.length;
@@ -130,10 +178,22 @@ function renderTicketsCard() {
   });
   const [featured, ...rest] = sorted;
   const elsewhere = t => (t.cityName && t.cityName !== currentCity.name ? ` · ${escapeHtml(t.cityName)}` : "");
+  const calBtn = t => {
+    const { google, outlook, icsUrl, filename } = buildCalendarLinks(t);
+    return `<button type="button" class="cal-btn"
+        data-google="${escapeHtml(google)}"
+        data-outlook="${escapeHtml(outlook)}"
+        data-ics="${escapeHtml(icsUrl)}"
+        data-filename="${escapeHtml(filename)}"
+        title="Add to calendar" aria-label="Add ${escapeHtml(t.title)} to calendar">🗓️+</button>`;
+  };
 
   const featuredHtml = `
     <div class="ticket-featured">
-      <div class="ticket-title"><a class="ext-link" href="${escapeHtml(featured.key)}" target="_blank" rel="noopener">${escapeHtml(featured.title)}</a></div>
+      <div class="ticket-featured-row">
+        <div class="ticket-title"><a class="ext-link" href="${escapeHtml(featured.key)}" target="_blank" rel="noopener">${escapeHtml(featured.title)}</a></div>
+        ${calBtn(featured)}
+      </div>
       <div class="ticket-when">${fmtTicketWhen(featured)}${featured.venue ? ` · ${escapeHtml(featured.venue)}` : ""}${elsewhere(featured)}</div>
     </div>`;
 
@@ -143,6 +203,7 @@ function renderTicketsCard() {
           <div class="ticket-row">
             <span class="ticket-title"><a class="ext-link" href="${escapeHtml(t.key)}" target="_blank" rel="noopener">${escapeHtml(t.title)}</a></span>
             <span class="ticket-when">${fmtTicketWhen(t)}${elsewhere(t)}</span>
+            ${calBtn(t)}
           </div>`)
         .join("")}</div>`
     : "";
@@ -744,6 +805,81 @@ function toggleNavPicker(btn) {
   positionPopoverNear(navPickerEl, btn);
 }
 
+// ---------- Add-to-calendar picker (My Tickets card) ----------
+
+let calPickerEl = null;
+let activeCalBtn = null;
+
+function initCalPicker() {
+  calPickerEl = document.createElement("div");
+  calPickerEl.id = "cal-picker";
+  calPickerEl.className = "nav-picker hidden";
+  calPickerEl.setAttribute("role", "menu");
+  calPickerEl.innerHTML = `
+    <button type="button" data-key="google" role="menuitem">Google Calendar</button>
+    <button type="button" data-key="outlook" role="menuitem">Outlook</button>
+    <button type="button" data-key="ics" role="menuitem">Apple / Download .ics</button>
+  `;
+  document.body.appendChild(calPickerEl);
+
+  calPickerEl.addEventListener("click", ev => {
+    const btn = ev.target.closest("button[data-key]");
+    if (!btn) return;
+    if (btn.dataset.key === "ics") {
+      const a = document.createElement("a");
+      a.href = calPickerEl.dataset.ics;
+      a.download = calPickerEl.dataset.filename || "event.ics";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } else {
+      const url = calPickerEl.dataset[btn.dataset.key];
+      if (url) window.open(url, "_blank", "noopener");
+    }
+    hideCalPicker();
+  });
+
+  document.getElementById("tickets-body").addEventListener("click", ev => {
+    const btn = ev.target.closest(".cal-btn");
+    if (!btn) return;
+    ev.stopPropagation();
+    toggleCalPicker(btn);
+  });
+
+  document.addEventListener("click", ev => {
+    if (calPickerEl.classList.contains("hidden")) return;
+    if (ev.target.closest("#cal-picker")) return;
+    hideCalPicker();
+  });
+
+  document.addEventListener("keydown", ev => {
+    if (ev.key === "Escape") hideCalPicker();
+  });
+
+  window.addEventListener("scroll", hideCalPicker, true);
+  window.addEventListener("resize", hideCalPicker);
+}
+
+function hideCalPicker() {
+  if (!calPickerEl) return;
+  calPickerEl.classList.add("hidden");
+  activeCalBtn = null;
+}
+
+function toggleCalPicker(btn) {
+  if (activeCalBtn === btn && !calPickerEl.classList.contains("hidden")) {
+    hideCalPicker();
+    return;
+  }
+  activeCalBtn = btn;
+  calPickerEl.dataset.google = btn.dataset.google;
+  calPickerEl.dataset.outlook = btn.dataset.outlook;
+  calPickerEl.dataset.ics = btn.dataset.ics;
+  calPickerEl.dataset.filename = btn.dataset.filename;
+  calPickerEl.classList.remove("hidden");
+  positionPopoverNear(calPickerEl, btn);
+}
+
 // ---------- City picker ----------
 
 let cityPickerEl = null;
@@ -872,6 +1008,7 @@ const COLLAPSIBLE_CARDS = [
 // collapsing a card just shrinks that card to its own header height; no
 // row-sizing math needed to redistribute space to whichever one is expanded.
 function initCollapsibleCards() {
+  document.getElementById("weather-label").innerHTML = renderWavyText("Weather");
   document.getElementById("tickets-label").innerHTML = renderWavyText("My Tickets");
   COLLAPSIBLE_CARDS.forEach(({ key, cardId, toggleId }) => {
     const card = document.getElementById(cardId);
@@ -907,14 +1044,14 @@ function initEventsTabs() {
 
 function updateEventsTitleForDate() {
   const [y, m, d] = selectedEventDate.split("-");
-  document.getElementById("events-title").textContent = `Events on ${m}/${d}/${y}`;
+  document.getElementById("events-title").innerHTML = renderWavyText(`Events on ${m}/${d}/${y}`);
 }
 
 function clearEventsDate() {
   selectedEventDate = null;
   document.getElementById("events-date").value = "";
   document.getElementById("events-date-clear").classList.add("hidden");
-  document.getElementById("events-title").textContent = "Upcoming Events";
+  document.getElementById("events-title").innerHTML = renderWavyText("Upcoming Events");
 }
 
 function initEventsDatePicker() {
@@ -958,8 +1095,10 @@ function init() {
   setInterval(tickClock, REFRESH.clockTick);
   setInterval(refreshAgoLabels, REFRESH.agoTick);
   initNavPicker();
+  initCalPicker();
   initCityPicker();
   initEventsDatePicker();
+  clearEventsDate();
   initEventsTabs();
   initCollapsibleCards();
   renderTicketsCard();
