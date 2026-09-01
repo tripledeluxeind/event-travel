@@ -49,6 +49,107 @@ let selectedEventDate = null;
 let currentEventsRows = [];
 let selectedCategory = "all";
 
+// Events the user has checked off as "got tix" for, persisted across
+// reloads. Stored as self-contained snapshots (not just a key flag on the
+// live rows) since the Got Tix card needs to keep showing an event even
+// after switching away from the city it belongs to, or past its own
+// source's normal fetch window - each snapshot carries its own timezone
+// for that same reason (currentCity.tz would be wrong once you've
+// switched to a different city than the ticketed event's own).
+let ticketedEvents = loadTicketedEvents();
+
+function loadTicketedEvents() {
+  try {
+    const raw = JSON.parse(localStorage.getItem("ticketedEvents") || "[]");
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTicketedEvents() {
+  localStorage.setItem("ticketedEvents", JSON.stringify(ticketedEvents));
+}
+
+function isTicketed(key) {
+  return ticketedEvents.some(t => t.key === key);
+}
+
+function toggleTicketed(row, checked) {
+  const key = eventLink(row);
+  if (checked) {
+    if (!isTicketed(key)) {
+      ticketedEvents.push({
+        key,
+        title: row.title,
+        startDate: row.startDate,
+        hasTime: row.hasTime,
+        venue: row.venue,
+        cityName: currentCity.name,
+        cityTz: currentCity.tz,
+      });
+    }
+  } else {
+    ticketedEvents = ticketedEvents.filter(t => t.key !== key);
+  }
+  saveTicketedEvents();
+  renderTicketsCard();
+}
+
+function fmtTicketWhen(t) {
+  return fmtEventWhen(t.startDate, t.hasTime !== false, t.cityTz || currentCity.tz);
+}
+
+// Prunes anything that's already started (no point featuring - or even
+// keeping - a "got tix" reminder for a show you're already at or missed),
+// then shows the soonest remaining one prominently with anything further
+// out listed compactly below. Hides the whole card when the list is empty
+// rather than leaving a purposeless empty card on screen. Called after
+// every checkbox toggle and on the same 30s tick that re-checks the
+// header teasers, so it advances live as events start.
+function renderTicketsCard() {
+  const now = Date.now();
+  const before = ticketedEvents.length;
+  ticketedEvents = ticketedEvents.filter(t => !t.startDate || new Date(t.startDate).getTime() >= now);
+  if (ticketedEvents.length !== before) saveTicketedEvents();
+
+  const card = document.getElementById("card-tickets");
+  const body = document.getElementById("tickets-body");
+
+  if (!ticketedEvents.length) {
+    card.classList.add("hidden");
+    body.innerHTML = "";
+    return;
+  }
+  card.classList.remove("hidden");
+
+  const sorted = [...ticketedEvents].sort((a, b) => {
+    const ta = a.startDate ? new Date(a.startDate).getTime() : Infinity;
+    const tb = b.startDate ? new Date(b.startDate).getTime() : Infinity;
+    return ta - tb;
+  });
+  const [featured, ...rest] = sorted;
+  const elsewhere = t => (t.cityName && t.cityName !== currentCity.name ? ` · ${escapeHtml(t.cityName)}` : "");
+
+  const featuredHtml = `
+    <div class="ticket-featured">
+      <div class="ticket-title"><a class="ext-link" href="${escapeHtml(featured.key)}" target="_blank" rel="noopener">${escapeHtml(featured.title)}</a></div>
+      <div class="ticket-when">${fmtTicketWhen(featured)}${featured.venue ? ` · ${escapeHtml(featured.venue)}` : ""}${elsewhere(featured)}</div>
+    </div>`;
+
+  const restHtml = rest.length
+    ? `<div class="ticket-more">${rest
+        .map(t => `
+          <div class="ticket-row">
+            <span class="ticket-title"><a class="ext-link" href="${escapeHtml(t.key)}" target="_blank" rel="noopener">${escapeHtml(t.title)}</a></span>
+            <span class="ticket-when">${fmtTicketWhen(t)}${elsewhere(t)}</span>
+          </div>`)
+        .join("")}</div>`
+    : "";
+
+  body.innerHTML = featuredHtml + restHtml;
+}
+
 // Every source reports its own raw category vocabulary (DoStuff's dozens of
 // per-city genre slugs, dtphx's own tag ids already normalized server-side
 // to "concerts"/"sports"/"food"/"community", Reno's single always-"music"
@@ -101,6 +202,7 @@ function refreshAgoLabels() {
   updateNowPlayingTeaser(lastUpcomingRows);
   updateNextEventTeaser(lastUpcomingRows);
   renderEventsList(currentEventsRows);
+  renderTicketsCard();
 }
 
 function tickClock() {
@@ -309,9 +411,8 @@ function renderAlerts(alertsData) {
 // hasTime=false is for sources that only give a date, no time-of-day (e.g.
 // the Eventbrite backfill) - showing a fabricated or misleading time would
 // be worse than just omitting it, so those just render the day.
-function fmtEventWhen(iso, hasTime = true) {
+function fmtEventWhen(iso, hasTime = true, tz = currentCity.tz) {
   if (!iso) return "Time TBD";
-  const tz = currentCity.tz;
   const d = new Date(iso);
   const now = new Date();
   const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
@@ -331,9 +432,9 @@ function fmtEventWhen(iso, hasTime = true) {
   return `${day} · ${time}`;
 }
 
-function fmtNextEventTime(iso, hasTime = true) {
+function fmtNextEventTime(iso, hasTime = true, tz = currentCity.tz) {
   if (!iso || !hasTime) return "";
-  return new Date(iso).toLocaleTimeString("en-US", { timeZone: currentCity.tz, hour: "numeric", minute: "2-digit" });
+  return new Date(iso).toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" });
 }
 
 // Most sources give a permalink relative to the city's domain; the
@@ -494,12 +595,16 @@ function renderEventsList(rows) {
   }
 
   document.getElementById("events-body").innerHTML = filtered
-    .map(e => {
+    .map((e, i) => {
       const { gmapsUrl, wazeUrl, appleUrl, place } = directionsLinks(e);
+      const checked = isTicketed(eventLink(e));
 
       return `
         <div class="list-item">
-          <div class="title"><a class="ext-link" href="${eventLink(e)}" target="_blank" rel="noopener">${escapeHtml(e.title)}</a></div>
+          <div class="title">
+            <input type="checkbox" class="ticket-check" data-index="${i}" ${checked ? "checked" : ""} title="I've got tickets to this" aria-label="Mark ${escapeHtml(e.title)} as got tickets">
+            <a class="ext-link" href="${eventLink(e)}" target="_blank" rel="noopener">${escapeHtml(e.title)}</a>
+          </div>
           <div class="sub">
             <span class="badge">${fmtEventWhen(e.startDate, e.hasTime !== false)}</span>
             <button type="button" class="badge accent2 venue-btn"
@@ -512,6 +617,15 @@ function renderEventsList(rows) {
         </div>`;
     })
     .join("");
+
+  // Delegated + rebuilt on every render, cheap for a list this size and
+  // simpler than diffing - data-index maps back into `filtered`, the exact
+  // array actually rendered, rather than re-deriving it from the DOM.
+  document.getElementById("events-body").querySelectorAll(".ticket-check").forEach(input => {
+    input.addEventListener("change", () => {
+      toggleTicketed(filtered[Number(input.dataset.index)], input.checked);
+    });
+  });
 }
 
 async function loadEvents() {
@@ -737,6 +851,9 @@ function selectCity(key) {
 
   resetEventsTabs();
   clearEventsDate();
+  // Re-render so a ticketed event elsewhere now picks up its "· City"
+  // label (or loses it, if you've switched back to its own city).
+  renderTicketsCard();
 
   loadWeather();
   loadEvents();
@@ -747,6 +864,9 @@ function selectCity(key) {
 const COLLAPSIBLE_CARDS = [
   { key: "weather", cardId: "card-weather", toggleId: "weather-collapse-toggle" },
   { key: "events", cardId: "card-events", toggleId: "events-collapse-toggle" },
+  // Not a grid item (see .ticket-card), so collapsing it never touches
+  // updateGridRows() - it just hides/shows its own card-body in place.
+  { key: "tickets", cardId: "card-tickets", toggleId: "tickets-collapse-toggle" },
 ];
 
 // The grid's two rows default to auto/1fr (Weather sizes to its own content,
@@ -860,6 +980,7 @@ function init() {
   initEventsDatePicker();
   initEventsTabs();
   initCollapsibleCards();
+  renderTicketsCard();
 
   loadWeather();
   loadEvents();

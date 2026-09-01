@@ -308,6 +308,86 @@ body {
 
 .alert-banner.hidden { display: none; }
 
+/* A sibling of .grid, not a grid item - it just stacks above Weather in
+   the page's normal flex flow, so it never needs to participate in the
+   Weather/Events 1fr row-sizing logic below. Hidden entirely (not just
+   collapsed) until at least one event is checked, so it costs nothing
+   for anyone who never uses the feature. */
+.ticket-card {
+  flex: 0 0 auto;
+  margin: 14px 14px 0;
+}
+
+.ticket-card.hidden { display: none; }
+
+#tickets-body {
+  padding: 10px 14px 14px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.ticket-empty {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 8px 0;
+}
+
+.ticket-featured {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(77, 163, 255, 0.12);
+  border: 1px solid var(--accent);
+}
+
+.ticket-featured .ticket-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.ticket-featured .ticket-when {
+  font-size: 0.85rem;
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.ticket-more {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.ticket-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 0.82rem;
+}
+
+.ticket-row .ticket-title {
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ticket-row .ticket-when {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+/* The checkbox on each event row in the Events list, used to add it here. */
+.ticket-check {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
 .grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -647,8 +727,16 @@ body {
 .list-item:last-child { border-bottom: none; }
 
 .list-item .title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   font-weight: 600;
   font-size: 0.92rem;
+}
+
+.list-item .title a {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .list-item .sub {
