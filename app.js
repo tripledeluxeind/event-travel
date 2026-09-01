@@ -864,31 +864,15 @@ function selectCity(key) {
 const COLLAPSIBLE_CARDS = [
   { key: "weather", cardId: "card-weather", toggleId: "weather-collapse-toggle" },
   { key: "events", cardId: "card-events", toggleId: "events-collapse-toggle" },
-  // Not a grid item (see .ticket-card), so collapsing it never touches
-  // updateGridRows() - it just hides/shows its own card-body in place.
   { key: "tickets", cardId: "card-tickets", toggleId: "tickets-collapse-toggle" },
 ];
 
-// The grid's two rows default to auto/1fr (Weather sizes to its own content,
-// Events fills whatever's left) - collapsing Weather already works with that
-// as-is, since Events' 1fr row just claims the freed space. Collapsing
-// Events instead needs the assignment flipped so Weather is the one that
-// grows into the freed space; collapsing both avoids fr entirely so the
-// grid doesn't stretch a chunk of empty background beneath two headers.
-function updateGridRows() {
-  const weatherCollapsed = document.getElementById("card-weather").classList.contains("collapsed");
-  const eventsCollapsed = document.getElementById("card-events").classList.contains("collapsed");
-  const grid = document.querySelector(".grid");
-  if (weatherCollapsed && eventsCollapsed) {
-    grid.style.gridTemplateRows = "auto auto";
-  } else if (eventsCollapsed) {
-    grid.style.gridTemplateRows = "1fr auto";
-  } else {
-    grid.style.gridTemplateRows = "auto 1fr";
-  }
-}
-
+// Both grid rows are auto-height now (the page scrolls naturally instead of
+// being locked to the viewport - see the .grid comment in style.css), so
+// collapsing a card just shrinks that card to its own header height; no
+// row-sizing math needed to redistribute space to whichever one is expanded.
 function initCollapsibleCards() {
+  document.getElementById("tickets-label").innerHTML = renderWavyText("My Tickets");
   COLLAPSIBLE_CARDS.forEach(({ key, cardId, toggleId }) => {
     const card = document.getElementById(cardId);
     const toggle = document.getElementById(toggleId);
@@ -898,10 +882,8 @@ function initCollapsibleCards() {
     toggle.addEventListener("click", () => {
       card.classList.toggle("collapsed");
       localStorage.setItem(`collapsed:${key}`, card.classList.contains("collapsed"));
-      updateGridRows();
     });
   });
-  updateGridRows();
 }
 
 // ---------- Events category tabs ----------

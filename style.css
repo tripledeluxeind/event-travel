@@ -8,6 +8,7 @@
   --accent-2: #37d6b8;
   --warn: #ffb020;
   --danger: #ff4d5e;
+  --wind-green: #3ddc84;
   --radius: 14px;
 }
 
@@ -19,22 +20,24 @@ html, body {
   background: var(--bg);
   color: var(--text);
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif;
-  height: 100%;
-  overflow: hidden;
+  height: auto;
+  overflow: visible;
 }
 
 /* Always render as a single narrow (phone-portrait-width) column, even in a
    wide desktop browser window - this app is designed mobile-first and looks
-   wrong stretched into a landscape 2-column layout. The whole thing is also
-   locked to the viewport height: header/footer/Weather keep their natural
-   size, and Events (which can be a long list) takes whatever's left and
-   scrolls internally, so the page itself never needs to scroll top-to-bottom. */
+   wrong stretched into a landscape 2-column layout. Used to also lock the
+   whole thing to the viewport height (Weather natural size, Events filling
+   whatever was left, scrolling internally) - that only ever worked because
+   there were exactly two cards below the header. A third (Got Tix) broke
+   the math, and patching it further for N cards wasn't worth it when the
+   page can just scroll normally instead - same approach already used below
+   600px, now applied everywhere. */
 body {
   max-width: 640px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  height: 100%;
 }
 
 .topbar {
@@ -78,7 +81,11 @@ body {
   outline-offset: 3px;
 }
 
-.city-toggle .letter {
+/* The letter-wave/rainbow-glow/drip hover effect, originally built just for
+   the city name - factored out to its own class (decoupled from
+   .city-toggle's own button chrome below) so any wavy-text-rendered label
+   can reuse it, e.g. the "My Tickets" toggle. */
+.wavy-text .letter {
   display: inline-block;
   position: relative;
   color: #ffffff;
@@ -86,8 +93,8 @@ body {
 
 /* White letters stay crisp on top; the rainbow lives as a glow underneath
    them, plus a little pixel of it drips off the bottom of each letter. */
-.city-toggle:hover .letter,
-.city-toggle:focus-visible .letter {
+.wavy-text:hover .letter,
+.wavy-text:focus-visible .letter {
   animation:
     nyan-wave 0.7s ease-in-out infinite,
     nyan-glow 1.4s linear infinite;
@@ -96,7 +103,7 @@ body {
     calc(var(--i) * 0.06s);
 }
 
-.city-toggle .drip {
+.wavy-text .drip {
   position: absolute;
   left: calc(20% + var(--d) * 20%);
   bottom: -1px;
@@ -107,8 +114,8 @@ body {
   image-rendering: pixelated;
 }
 
-.city-toggle:hover .drip,
-.city-toggle:focus-visible .drip {
+.wavy-text:hover .drip,
+.wavy-text:focus-visible .drip {
   animation:
     nyan-drip-color 1.4s steps(6) infinite,
     nyan-drip-fall 0.9s steps(5) infinite;
@@ -275,26 +282,6 @@ body {
   .next-event {
     max-width: 100%;
   }
-
-  /* The viewport-height-locked, internal-scroll layout (see the .grid /
-     #card-weather / #card-events comments above) works well on desktop,
-     where Weather's content leaves plenty of room for Events. On a phone,
-     the header alone can eat a third of the screen, squeezing the Events
-     card down to a sliver that's nearly unusable. Below 600px, let the
-     page scroll normally instead, and give Events a real fixed-height
-     scroll area of its own regardless of how tall everything above it is. */
-  html, body {
-    height: auto;
-    overflow: visible;
-  }
-
-  .grid {
-    grid-template-rows: auto auto;
-  }
-
-  .card-body {
-    max-height: 55vh;
-  }
 }
 
 .alert-banner {
@@ -340,10 +327,11 @@ body {
   border: 1px solid var(--accent);
 }
 
-.ticket-featured .ticket-title {
-  font-size: 1rem;
+.ticket-featured .ticket-title,
+.ticket-featured .ticket-title a {
+  font-size: 1.15rem;
   font-weight: 700;
-  color: var(--text);
+  color: var(--wind-green);
 }
 
 .ticket-featured .ticket-when {
@@ -366,8 +354,10 @@ body {
   font-size: 0.82rem;
 }
 
-.ticket-row .ticket-title {
-  color: var(--text);
+.ticket-row .ticket-title,
+.ticket-row .ticket-title a {
+  font-size: 0.92rem;
+  color: var(--wind-green);
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -388,14 +378,15 @@ body {
   cursor: pointer;
 }
 
+/* Both rows are auto-height now (see the body comment above) - Weather and
+   Events just stack and take whatever height their own content needs, with
+   Events' own scroll area capped by .card-body's max-height below. */
 .grid {
   display: grid;
   grid-template-columns: 1fr;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto;
   gap: 14px;
   padding: 14px;
-  flex: 1 1 auto;
-  min-height: 0;
 }
 
 .card {
@@ -578,6 +569,7 @@ body {
   padding: 8px 14px 14px;
   flex: 1;
   min-height: 0;
+  max-height: 55vh;
   overflow-y: auto;
 }
 
@@ -651,7 +643,7 @@ body {
 }
 
 /* Wind / Humidity / Direction, in that fixed order from app.js. */
-.wx-meta div:nth-child(1) { color: #3ddc84; }
+.wx-meta div:nth-child(1) { color: var(--wind-green); }
 .wx-meta div:nth-child(2) { color: #ffe14d; }
 .wx-meta div:nth-child(3) { color: #ff4d5e; }
 
