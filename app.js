@@ -198,7 +198,7 @@ function renderTicketsCard() {
 // value) - this collapses all of it down to the tabs in the Events card.
 function normalizeCategory(raw) {
   const c = (raw || "").toLowerCase();
-  if (c === "concerts" || c === "sports" || c === "food" || c === "comedy" || c === "community") return c;
+  if (c === "concerts" || c === "sports" || c === "food" || c === "comedy" || c === "edm" || c === "community") return c;
   if (/sport/.test(c)) return "sports";
   if (/food|drink|culinary|happy-hour/.test(c)) return "food";
   if (/comedy|improv/.test(c)) return "comedy";

@@ -197,13 +197,15 @@ async function getUpcomingEventsJson(domain, cityKey, specificDate) {
     const target = new Date(`${specificDate}T00:00:00`);
     if (isNaN(target)) return [];
 
-    const [dayEvents, ebAll] = await Promise.all([
+    const [dayEvents, ebAll, hzAll] = await Promise.all([
       getDoStuffDaysEvents(domain, [target]),
       getEventbriteBackfillPromise(cityKey),
+      get19hzBackfillPromise(cityKey),
     ]);
     const unique = dedupeByPermalink(dayEvents);
     let matching = unique.filter((e) => e.startDate && dateOnly(e.startDate) === specificDate);
-    matching = mergeEventbriteResults(matching, ebAll, specificDate, specificDate);
+    matching = mergeBackfillResults(matching, ebAll, specificDate, specificDate);
+    matching = mergeBackfillResults(matching, hzAll, specificDate, specificDate);
     return sortByStartDate(matching);
   }
 
@@ -213,9 +215,10 @@ async function getUpcomingEventsJson(domain, cityKey, specificDate) {
   const todayStr = ymd(today);
   const tomorrowStr = ymd(tomorrow);
 
-  const [all, ebAll] = await Promise.all([
+  const [all, ebAll, hzAll] = await Promise.all([
     getDoStuffDaysEvents(domain, [today, tomorrow]),
     getEventbriteBackfillPromise(cityKey),
+    get19hzBackfillPromise(cityKey),
   ]);
   let unique = dedupeByPermalink(all);
 
@@ -224,7 +227,8 @@ async function getUpcomingEventsJson(domain, cityKey, specificDate) {
   // drop anything dated before today so the list only shows real upcoming times.
   unique = unique.filter((e) => !e.startDate || new Date(e.startDate).getTime() >= today.getTime());
 
-  unique = mergeEventbriteResults(unique, ebAll, todayStr, tomorrowStr);
+  unique = mergeBackfillResults(unique, ebAll, todayStr, tomorrowStr);
+  unique = mergeBackfillResults(unique, hzAll, todayStr, tomorrowStr);
   return sortByStartDate(unique);
 }
 
@@ -351,7 +355,7 @@ async function getRenoSceneEventsJson(specificDate) {
   if (specificDate) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(specificDate)) return [];
     let matching = cached.filter((e) => e.startDate && dateOnly(e.startDate) === specificDate);
-    matching = mergeEventbriteResults(matching, await ebPromise, specificDate, specificDate);
+    matching = mergeBackfillResults(matching, await ebPromise, specificDate, specificDate);
     return sortByStartDate(matching);
   }
 
@@ -367,7 +371,7 @@ async function getRenoSceneEventsJson(specificDate) {
   // Reno's own concert list can span weeks, but the Eventbrite backfill only
   // needs to cover the same near-term window every other city gets - it's
   // there to fill a Sports/Food gap, not to extend the horizon.
-  upcoming = mergeEventbriteResults(upcoming, await ebPromise, todayStr, tomorrowStr);
+  upcoming = mergeBackfillResults(upcoming, await ebPromise, todayStr, tomorrowStr);
   return sortByStartDate(upcoming);
 }
 
@@ -501,7 +505,7 @@ async function getDtphxEventsJson(specificDate) {
       getEventbriteBackfillPromise("phx"),
     ]);
     let matching = dayEvents.filter((e) => e.startDate && dateOnly(e.startDate) === specificDate);
-    matching = mergeEventbriteResults(matching, ebAll, specificDate, specificDate);
+    matching = mergeBackfillResults(matching, ebAll, specificDate, specificDate);
     return sortByStartDate(matching);
   }
 
@@ -535,7 +539,7 @@ async function getDtphxEventsJson(specificDate) {
     getEventbriteBackfillPromise("phx"),
   ]);
   let upcoming = all.filter((e) => !e.startDate || new Date(e.startDate).getTime() >= azMidnightTodayInstantMs);
-  upcoming = mergeEventbriteResults(upcoming, ebAll, todayStr, tomorrowStr);
+  upcoming = mergeBackfillResults(upcoming, ebAll, todayStr, tomorrowStr);
   return sortByStartDate(upcoming);
 }
 
@@ -708,11 +712,15 @@ function getEventbriteBackfillPromise(cityKey) {
   return getEventbriteEventsBatch(cityKey);
 }
 
-// Merges already-fetched Eventbrite events into a primary source's results
-// for a given date range, skipping anything that's a same-title/same-day
-// match for an event the primary source already has (cheap de-dup -
-// permalinks never match across sources, so title+date is what's available).
-function mergeEventbriteResults(existingEvents, ebAll, startDate, endDate) {
+// Merges an already-fetched backfill source's events into a primary
+// source's results for a given date range, skipping anything that's a
+// same-title/same-day match for an event the primary source already has
+// (cheap de-dup - permalinks never match across sources, so title+date is
+// what's available). Shared by the Eventbrite Sports/Food backfill and the
+// Seattle-only 19hz EDM backfill - safe to call more than once in a row
+// (e.g. merge Eventbrite, then 19hz into the result of that), since each
+// call recomputes existingKeys from whatever's been accumulated so far.
+function mergeBackfillResults(existingEvents, freshAll, startDate, endDate) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return existingEvents;
 
   const existingKeys = new Set();
@@ -721,7 +729,7 @@ function mergeEventbriteResults(existingEvents, ebAll, startDate, endDate) {
     if (e.title && d) existingKeys.add(`${e.title.toLowerCase().trim()}|${d}`);
   }
 
-  const fresh = ebAll.filter((e) => {
+  const fresh = freshAll.filter((e) => {
     const d = dateOnly(e.startDate);
     if (!d) return false;
     if (d < startDate || d > endDate) return false;
@@ -730,6 +738,111 @@ function mergeEventbriteResults(existingEvents, ebAll, startDate, endDate) {
   });
 
   return [...existingEvents, ...fresh];
+}
+
+// ---- 19hz.info (Seattle-only EDM/electronic backfill) ----
+//
+// Seattle's page lists two very different things in one table: real dated
+// one-off shows (bare <tr>, with a hidden <div class='shrink'>YYYY/MM/DD</div>
+// giving a clean machine-readable date) and recurring monthly/weekly club
+// nights (<tr class='even'/'odd'>, dated only as text like "1st Mondays" -
+// no calendar date at all). Only the former is usable here without building
+// a whole recurrence-rule parser for informal English phrases, so rows
+// without that shrink date (the recurring section) are simply skipped.
+// Confirmed via a real overlap check that this is worth doing at all: some
+// bigger shows (e.g. "Tape B") are already on do206.com too - mergeBackfillResults'
+// title+date de-dup (already proven for the Eventbrite backfill) handles that.
+
+const NINETEEN_HZ_SEATTLE_URL = "https://19hz.info/eventlisting_Seattle.php";
+
+function parse19hzSeattleHtml(html) {
+  const events = [];
+  const startRe = /<tr><td>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun): [A-Za-z]{3} \d{1,2}\s*<br\s*\/>\s*\(([^)]*)\)<\/td>/g;
+  const starts = [...html.matchAll(startRe)];
+  for (let i = 0; i < starts.length; i++) {
+    const m = starts[i];
+    const blockStart = m.index;
+    const blockEnd = i + 1 < starts.length ? starts[i + 1].index : Math.min(html.length, blockStart + 2000);
+    const block = html.slice(blockStart, blockEnd);
+
+    const linkMatch = block.match(/<a href='(?<url>[^']+)'>(?<title>[^<]+)<\/a> @ (?<venue>[^<]+)<td>(?<genre>[^<]*)<\/td>/);
+    if (!linkMatch) continue;
+
+    // The recurring section (no shrink date) never reaches this far since
+    // its rows have a different <tr> shape entirely, but skip defensively
+    // if a row is somehow missing it rather than guessing a date.
+    const dateMatch = block.match(/<div class='shrink'>(?<y>\d{4})\/(?<mo>\d{2})\/(?<d>\d{2})<\/div>/);
+    if (!dateMatch) continue;
+
+    let startDate = null;
+    const timeParse = m[1].match(/(?<h>\d{1,2})(:(?<mn>\d{2}))?\s*(?<ap>[ap]m)/i);
+    if (timeParse) {
+      let hour = parseInt(timeParse.groups.h, 10);
+      const minute = timeParse.groups.mn ? parseInt(timeParse.groups.mn, 10) : 0;
+      const ap = timeParse.groups.ap.toLowerCase();
+      if (ap === "pm" && hour !== 12) hour += 12;
+      if (ap === "am" && hour === 12) hour = 0;
+      const pad = (n) => String(n).padStart(2, "0");
+      const { y, mo, d } = dateMatch.groups;
+      // Anchored to a UTC instant on the right calendar day (not a naive
+      // local-time string, which Node would parse using the *server's*
+      // timezone rather than Seattle's) purely so getUtcOffsetString can
+      // look up the correct PDT/PST offset for that date - same trick
+      // already used for Eventbrite's date-only entries above.
+      const referenceInstant = new Date(`${y}-${mo}-${d}T${pad(hour)}:${pad(minute)}:00Z`);
+      const offsetStr = getUtcOffsetString("America/Los_Angeles", referenceInstant);
+      startDate = `${y}-${mo}-${d}T${pad(hour)}:${pad(minute)}${offsetStr}`;
+    }
+    if (!startDate) continue;
+
+    // "Venue Name (City, ST)" or "Venue Name (City)" - split when it
+    // matches that shape, otherwise just use the whole thing as venue.
+    let venue = linkMatch.groups.venue.trim();
+    let city = null;
+    const venueCityMatch = venue.match(/^(.*?)\s*\(([^,()]+)(?:,\s*[A-Z]{2})?\)$/);
+    if (venueCityMatch) {
+      venue = venueCityMatch[1].trim();
+      city = venueCityMatch[2].trim();
+    }
+
+    events.push({
+      title: htmlDecode(linkMatch.groups.title.trim()),
+      permalink: linkMatch.groups.url,
+      venue,
+      city,
+      startDate,
+      category: "edm",
+      lat: null,
+      lon: null,
+    });
+  }
+  return events;
+}
+
+async function get19hzSeattleEventsBatch() {
+  const cacheKey = "19hz|seattle";
+  if (!isCacheFresh(cacheKey, 20)) {
+    let succeeded = false;
+    let parsed = [];
+    try {
+      const res = await fetch(NINETEEN_HZ_SEATTLE_URL, {
+        headers: { "User-Agent": "Mozilla/5.0", Accept: "text/html" },
+        signal: AbortSignal.timeout(15000),
+      });
+      const html = await res.text();
+      parsed = parse19hzSeattleHtml(html);
+      succeeded = true;
+    } catch {
+      parsed = [];
+    }
+    setEventsCache(cacheKey, parsed, succeeded);
+  }
+  return eventsCache.get(cacheKey) || [];
+}
+
+function get19hzBackfillPromise(cityKey) {
+  if (cityKey !== "sea") return Promise.resolve([]);
+  return get19hzSeattleEventsBatch();
 }
 
 // ---- Add-to-calendar (.ics) ----

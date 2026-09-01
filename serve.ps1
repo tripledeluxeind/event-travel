@@ -196,6 +196,7 @@ function Get-UpcomingEventsJson {
       try { ([datetime]$_.startDate).Date -eq $target.Date } catch { return $false }
     }
     $matching = Merge-EventbriteBackfill -existingEvents $matching -cityKey $cityKey -startDate $specificDate -endDate $specificDate
+    $matching = Merge-19hzBackfill -existingEvents $matching -cityKey $cityKey -startDate $specificDate -endDate $specificDate
     $sorted = $matching | Sort-Object { [datetime]$_.startDate }
 
     if ($sorted.Count -eq 0) { return "[]" }
@@ -219,6 +220,7 @@ function Get-UpcomingEventsJson {
   }
 
   $unique = Merge-EventbriteBackfill -existingEvents $unique -cityKey $cityKey -startDate $todayStart.ToString("yyyy-MM-dd") -endDate $tomorrow.ToString("yyyy-MM-dd")
+  $unique = Merge-19hzBackfill -existingEvents $unique -cityKey $cityKey -startDate $todayStart.ToString("yyyy-MM-dd") -endDate $tomorrow.ToString("yyyy-MM-dd")
 
   $sorted = $unique | Sort-Object {
     if ($_.startDate) { try { [datetime]$_.startDate } catch { [datetime]::MaxValue } } else { [datetime]::MaxValue }
@@ -715,6 +717,132 @@ function Merge-EventbriteBackfill {
   }
 
   $fresh = @($ebAll) | Where-Object {
+    $d = Get-EventDateOnly $_.startDate
+    if (-not $d) { return $false }
+    if ($d -lt $rangeStart -or $d -gt $rangeEnd) { return $false }
+    $key = "$($_.title.ToLower().Trim())|$($d.ToString('yyyy-MM-dd'))"
+    -not $existingKeys.ContainsKey($key)
+  }
+
+  return @($existingEvents) + @($fresh)
+}
+
+# ---- 19hz.info (Seattle-only EDM/electronic backfill) ----
+#
+# Seattle's page lists two very different things in one table: real dated
+# one-off shows (bare <tr>, with a hidden <div class='shrink'>YYYY/MM/DD</div>
+# giving a clean machine-readable date) and recurring monthly/weekly club
+# nights (<tr class='even'/'odd'>, dated only as text like "1st Mondays" -
+# no calendar date at all). Only the former is usable here without building
+# a whole recurrence-rule parser for informal English phrases, so rows
+# without that shrink date (the recurring section) are simply skipped.
+# Confirmed via a real overlap check that this is worth doing at all: some
+# bigger shows (e.g. "Tape B") are already on do206.com too - the same
+# title+date de-dup already proven for the Eventbrite backfill handles that.
+
+$NineteenHzSeattleUrl = "https://19hz.info/eventlisting_Seattle.php"
+
+function Parse-19hzSeattleHtml {
+  param([string]$html)
+  $events = @()
+  $starts = [regex]::Matches($html, "<tr><td>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun): [A-Za-z]{3} \d{1,2}\s*<br\s*/>\s*\((?<time>[^)]*)\)</td>")
+  for ($i = 0; $i -lt $starts.Count; $i++) {
+    $m = $starts[$i]
+    $blockStart = $m.Index
+    $blockEnd = if ($i + 1 -lt $starts.Count) { $starts[$i + 1].Index } else { [Math]::Min($html.Length, $blockStart + 2000) }
+    $block = $html.Substring($blockStart, $blockEnd - $blockStart)
+
+    $linkMatch = [regex]::Match($block, "<a href='(?<url>[^']+)'>(?<title>[^<]+)</a> @ (?<venue>[^<]+)<td>(?<genre>[^<]*)</td>")
+    if (-not $linkMatch.Success) { continue }
+
+    # The recurring section (no shrink date) never reaches this far since
+    # its rows have a different <tr> shape entirely, but skip defensively
+    # if a row is somehow missing it rather than guessing a date.
+    $dateMatch = [regex]::Match($block, "<div class='shrink'>(?<y>\d{4})/(?<mo>\d{2})/(?<d>\d{2})</div>")
+    if (-not $dateMatch.Success) { continue }
+
+    $startDate = $null
+    $timeParse = [regex]::Match($m.Groups['time'].Value, '(?<h>\d{1,2})(:(?<mn>\d{2}))?\s*(?<ap>[AaPp][Mm])')
+    if ($timeParse.Success) {
+      $hour = [int]$timeParse.Groups['h'].Value
+      $minute = if ($timeParse.Groups['mn'].Success) { [int]$timeParse.Groups['mn'].Value } else { 0 }
+      $ap = $timeParse.Groups['ap'].Value.ToLower()
+      if ($ap -eq "pm" -and $hour -ne 12) { $hour += 12 }
+      if ($ap -eq "am" -and $hour -eq 12) { $hour = 0 }
+      $y = $dateMatch.Groups['y'].Value
+      $mo = $dateMatch.Groups['mo'].Value
+      $d = $dateMatch.Groups['d'].Value
+      try {
+        $eventDateTime = [datetime]::ParseExact("$y-$mo-$d $($hour.ToString('D2')):$($minute.ToString('D2'))", "yyyy-MM-dd HH:mm", $null)
+        $offsetStr = Get-CityUtcOffsetString -cityKey "sea" -date $eventDateTime
+        $startDate = $eventDateTime.ToString("yyyy-MM-ddTHH:mm") + $offsetStr
+      } catch {}
+    }
+    if (-not $startDate) { continue }
+
+    # "Venue Name (City, ST)" or "Venue Name (City)" - split when it
+    # matches that shape, otherwise just use the whole thing as venue.
+    $venue = $linkMatch.Groups['venue'].Value.Trim()
+    $city = $null
+    $venueCityMatch = [regex]::Match($venue, '^(?<venue>.*?)\s*\((?<city>[^,()]+)(?:,\s*[A-Z]{2})?\)$')
+    if ($venueCityMatch.Success) {
+      $venue = $venueCityMatch.Groups['venue'].Value.Trim()
+      $city = $venueCityMatch.Groups['city'].Value.Trim()
+    }
+
+    $events += [PSCustomObject]@{
+      title     = [System.Net.WebUtility]::HtmlDecode($linkMatch.Groups['title'].Value.Trim())
+      permalink = $linkMatch.Groups['url'].Value
+      venue     = $venue
+      city      = $city
+      startDate = $startDate
+      category  = "edm"
+      lat       = $null
+      lon       = $null
+    }
+  }
+  return $events
+}
+
+function Get-19hzSeattleEventsBatch {
+  $cacheKey = "19hz|seattle"
+  if (-not (Test-EventsCacheFresh -cacheKey $cacheKey -ttlMinutes 20)) {
+    $succeeded = $false
+    $parsed = @()
+    try {
+      $resp = Invoke-WebRequest -Uri $NineteenHzSeattleUrl -UseBasicParsing -Headers @{ "User-Agent" = "Mozilla/5.0"; "Accept" = "text/html" } -TimeoutSec 15
+      $parsed = Parse-19hzSeattleHtml -html $resp.Content
+      $succeeded = $true
+    } catch {
+      $parsed = @()
+    }
+    Set-EventsCache -cacheKey $cacheKey -parsed $parsed -fetchSucceeded $succeeded
+  }
+  return $script:eventsCache[$cacheKey]
+}
+
+function Merge-19hzBackfill {
+  param([array]$existingEvents, [string]$cityKey, [string]$startDate, [string]$endDate)
+  if ($cityKey -ne "sea") { return $existingEvents }
+
+  $hzAll = Get-19hzSeattleEventsBatch
+
+  $rangeStart = $null; $rangeEnd = $null
+  try {
+    $rangeStart = ([datetime]::ParseExact($startDate, "yyyy-MM-dd", $null)).Date
+    $rangeEnd = ([datetime]::ParseExact($endDate, "yyyy-MM-dd", $null)).Date
+  } catch { return $existingEvents }
+
+  $existingKeys = @{}
+  foreach ($e in $existingEvents) {
+    $d = Get-EventDateOnly $e.startDate
+    if ($e.title -and $d) {
+      $key = "$($e.title.ToLower().Trim())|$($d.ToString('yyyy-MM-dd'))"
+      $existingKeys[$key] = $true
+    }
+  }
+
+  $fresh = @($hzAll) | Where-Object {
     $d = Get-EventDateOnly $_.startDate
     if (-not $d) { return $false }
     if ($d -lt $rangeStart -or $d -gt $rangeEnd) { return $false }
