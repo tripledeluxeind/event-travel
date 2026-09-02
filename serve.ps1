@@ -199,7 +199,13 @@ function Get-UpcomingEventsJson {
     }
     $matching = Merge-EventbriteBackfill -existingEvents $matching -cityKey $cityKey -startDate $specificDate -endDate $specificDate
     $matching = Merge-19hzBackfill -existingEvents $matching -cityKey $cityKey -startDate $specificDate -endDate $specificDate
-    $sorted = $matching | Sort-Object { [datetime]$_.startDate }
+    # @(...) forces array semantics even for a single-element result -
+    # without it, PowerShell's pipeline silently unwraps a lone result into
+    # a bare object, .Count comes back $null, and the single-item JSON-wrap
+    # guard below never fires (the client would get a bare object instead
+    # of a 1-element array and crash trying to .filter() it). Caught by a
+    # thin-data 19hz-only city (exactly 1 event that day) surfacing it.
+    $sorted = @($matching | Sort-Object { [datetime]$_.startDate })
 
     if ($sorted.Count -eq 0) { return "[]" }
     $json = $sorted | ConvertTo-Json -Depth 3
@@ -207,26 +213,29 @@ function Get-UpcomingEventsJson {
     return $json
   }
 
-  $today = Get-Date
-  $todayStart = $today.Date
-  $tomorrow = $today.AddDays(1)
-  $all = Get-DoStuffDaysEvents -domain $domain -dates @($today, $tomorrow)
+  $cityDates = Get-CityTodayTomorrow -cityKey $cityKey
+  $todayStart = $cityDates.TodayDateUtc
+  $tomorrow = $cityDates.TomorrowDateUtc
+  $all = Get-DoStuffDaysEvents -domain $domain -dates @($todayStart, $tomorrow)
   $unique = $all | Where-Object { $_.permalink } | Sort-Object -Property permalink -Unique
 
   # Some recurring/series listings carry their original debut date instead of
   # today's occurrence (e.g. a weekly series shows its season-opener date) -
   # drop anything dated before today so the list only shows real upcoming times.
+  # Parsed via DateTimeOffset (not a plain [datetime] cast) so both sides of
+  # the comparison are genuine UTC instants - see Get-CityTodayTomorrow's
+  # comment for why a plain cast broke this.
   $unique = $unique | Where-Object {
     if (-not $_.startDate) { return $true }
-    try { ([datetime]$_.startDate) -ge $todayStart } catch { $true }
+    try { ([System.DateTimeOffset]::Parse($_.startDate)).UtcDateTime -ge $todayStart } catch { $true }
   }
 
-  $unique = Merge-EventbriteBackfill -existingEvents $unique -cityKey $cityKey -startDate $todayStart.ToString("yyyy-MM-dd") -endDate $tomorrow.ToString("yyyy-MM-dd")
-  $unique = Merge-19hzBackfill -existingEvents $unique -cityKey $cityKey -startDate $todayStart.ToString("yyyy-MM-dd") -endDate $tomorrow.ToString("yyyy-MM-dd")
+  $unique = Merge-EventbriteBackfill -existingEvents $unique -cityKey $cityKey -startDate $cityDates.TodayStr -endDate $cityDates.TomorrowStr
+  $unique = Merge-19hzBackfill -existingEvents $unique -cityKey $cityKey -startDate $cityDates.TodayStr -endDate $cityDates.TomorrowStr
 
-  $sorted = $unique | Sort-Object {
+  $sorted = @($unique | Sort-Object {
     if ($_.startDate) { try { [datetime]$_.startDate } catch { [datetime]::MaxValue } } else { [datetime]::MaxValue }
-  }
+  })
 
   if ($sorted.Count -eq 0) { return "[]" }
   $json = $sorted | ConvertTo-Json -Depth 3
@@ -310,7 +319,7 @@ function Get-RenoSceneEventsJson {
       $_.startDate -and (([datetime]$_.startDate).Date -eq $target.Date)
     }
     $matching = Merge-EventbriteBackfill -existingEvents $matching -cityKey "reno" -startDate $specificDate -endDate $specificDate
-    $matching = $matching | Sort-Object { [datetime]$_.startDate }
+    $matching = @($matching | Sort-Object { [datetime]$_.startDate })
 
     if ($matching.Count -eq 0) { return "[]" }
     $json = $matching | ConvertTo-Json -Depth 3
@@ -318,18 +327,19 @@ function Get-RenoSceneEventsJson {
     return $json
   }
 
-  $todayStart = (Get-Date).Date
+  $cityDates = Get-CityTodayTomorrow -cityKey "reno"
+  $todayStart = $cityDates.TodayDateUtc
   # Concerts don't happen every day here like DoStuff cities' daily listings
   # do, so "today + tomorrow" would come up empty most nights - show every
   # upcoming show on the page instead, whatever span of days that covers.
   $upcoming = $script:eventsCache[$cacheKey] | Where-Object {
-    $_.startDate -and (([datetime]$_.startDate) -ge $todayStart)
+    $_.startDate -and ((([System.DateTimeOffset]::Parse($_.startDate)).UtcDateTime) -ge $todayStart)
   }
   # Reno's own concert list can span weeks, but the Eventbrite backfill only
   # needs to cover the same near-term window every other city gets - it's
   # there to fill a Sports/Food gap, not to extend the horizon.
-  $upcoming = Merge-EventbriteBackfill -existingEvents $upcoming -cityKey "reno" -startDate $todayStart.ToString("yyyy-MM-dd") -endDate $todayStart.AddDays(1).ToString("yyyy-MM-dd")
-  $upcoming = $upcoming | Sort-Object { [datetime]$_.startDate }
+  $upcoming = Merge-EventbriteBackfill -existingEvents $upcoming -cityKey "reno" -startDate $cityDates.TodayStr -endDate $cityDates.TomorrowStr
+  $upcoming = @($upcoming | Sort-Object { [datetime]$_.startDate })
 
   if ($upcoming.Count -eq 0) { return "[]" }
   $json = $upcoming | ConvertTo-Json -Depth 3
@@ -464,7 +474,7 @@ function Get-DtphxEventsJson {
     }
     $matching = Merge-EventbriteBackfill -existingEvents $matching -cityKey "phx" -startDate $specificDate -endDate $specificDate
     $matching = Merge-19hzBackfill -existingEvents $matching -cityKey "phx" -startDate $specificDate -endDate $specificDate
-    $matching = $matching | Sort-Object { [datetime]$_.startDate }
+    $matching = @($matching | Sort-Object { [datetime]$_.startDate })
 
     if ($matching.Count -eq 0) { return "[]" }
     $json = $matching | ConvertTo-Json -Depth 3
@@ -490,9 +500,9 @@ function Get-DtphxEventsJson {
   }
   $upcoming = Merge-EventbriteBackfill -existingEvents $upcoming -cityKey "phx" -startDate $phoenixToday.ToString("yyyy-MM-dd") -endDate $phoenixTomorrow.ToString("yyyy-MM-dd")
   $upcoming = Merge-19hzBackfill -existingEvents $upcoming -cityKey "phx" -startDate $phoenixToday.ToString("yyyy-MM-dd") -endDate $phoenixTomorrow.ToString("yyyy-MM-dd")
-  $upcoming = $upcoming | Sort-Object {
+  $upcoming = @($upcoming | Sort-Object {
     if ($_.startDate) { try { [datetime]$_.startDate } catch { [datetime]::MaxValue } } else { [datetime]::MaxValue }
-  }
+  })
 
   if ($upcoming.Count -eq 0) { return "[]" }
   $json = $upcoming | ConvertTo-Json -Depth 3
@@ -549,6 +559,39 @@ function Get-CityUtcOffsetString {
   } catch {
     return "+00:00"
   }
+}
+
+# "Today"/"tomorrow" must be the target city's own calendar date, not the
+# machine's - this only matters once this script actually deploys somewhere
+# running a different tz than whichever city is being tested locally, but
+# server.js (what's actually deployed) needs this same fix since Render runs
+# in UTC, so this is kept in parity with that rather than left machine-tz-
+# dependent here. Same approach as Get-DtphxEventsJson's own fixed -7h
+# handling below, generalized via $CityWindowsTz/TimeZoneInfo instead of a
+# hardcoded offset (Arizona has no DST to worry about; every other city
+# here does).
+#
+# TodayDateUtc/TomorrowDateUtc are the city's actual local-midnight instants,
+# converted to real Kind=Utc DateTimes rather than left as naive wall-clock
+# values - callers compare these against event startDates that also get
+# converted to Utc (via DateTimeOffset, same pattern as Get-EventDateOnly
+# above) so both sides of the comparison are genuine UTC instants. Comparing
+# a naive local-looking DateTime straight against a plain `[datetime]` cast
+# of an offset string mixes reference frames (exactly the mismatch
+# Get-EventDateOnly's own comment warns about) and was caught doing so here
+# during testing - it silently let a few hours of "yesterday evening,
+# city-local" events bleed into "today".
+function Get-CityTodayTomorrow {
+  param([string]$cityKey)
+  $winTzId = $CityWindowsTz[$cityKey]
+  $tz = if ($winTzId) { [System.TimeZoneInfo]::FindSystemTimeZoneById($winTzId) } else { [System.TimeZoneInfo]::Utc }
+  $cityNow = [System.TimeZoneInfo]::ConvertTimeFromUtc((Get-Date).ToUniversalTime(), $tz)
+  $todayStr = $cityNow.Date.ToString("yyyy-MM-dd")
+  $tomorrowStr = $cityNow.Date.AddDays(1).ToString("yyyy-MM-dd")
+  $todayMidnightUnspecified = [DateTime]::SpecifyKind($cityNow.Date, [DateTimeKind]::Unspecified)
+  $todayDateUtc = [System.TimeZoneInfo]::ConvertTimeToUtc($todayMidnightUnspecified, $tz)
+  $tomorrowDateUtc = $todayDateUtc.AddDays(1)
+  return @{ TodayDateUtc = $todayDateUtc; TomorrowDateUtc = $tomorrowDateUtc; TodayStr = $todayStr; TomorrowStr = $tomorrowStr }
 }
 
 # Finds "{...}" immediately after the first occurrence of $afterMarker,
@@ -927,7 +970,13 @@ function Get-BackfillOnlyEventsJson {
 
     $matching = Merge-EventbriteBackfill -existingEvents @() -cityKey $cityKey -startDate $specificDate -endDate $specificDate
     $matching = Merge-19hzBackfill -existingEvents $matching -cityKey $cityKey -startDate $specificDate -endDate $specificDate
-    $sorted = $matching | Sort-Object { [datetime]$_.startDate }
+    # @(...) forces array semantics even for a single-element result -
+    # without it, PowerShell's pipeline silently unwraps a lone result into
+    # a bare object, .Count comes back $null, and the single-item JSON-wrap
+    # guard below never fires (the client would get a bare object instead
+    # of a 1-element array and crash trying to .filter() it). Caught by a
+    # thin-data 19hz-only city (exactly 1 event that day) surfacing it.
+    $sorted = @($matching | Sort-Object { [datetime]$_.startDate })
 
     if ($sorted.Count -eq 0) { return "[]" }
     $json = $sorted | ConvertTo-Json -Depth 3
@@ -935,16 +984,14 @@ function Get-BackfillOnlyEventsJson {
     return $json
   }
 
-  $today = Get-Date
-  $todayStart = $today.Date
-  $tomorrow = $today.AddDays(1)
+  $cityDates = Get-CityTodayTomorrow -cityKey $cityKey
 
-  $combined = Merge-EventbriteBackfill -existingEvents @() -cityKey $cityKey -startDate $todayStart.ToString("yyyy-MM-dd") -endDate $tomorrow.ToString("yyyy-MM-dd")
-  $combined = Merge-19hzBackfill -existingEvents $combined -cityKey $cityKey -startDate $todayStart.ToString("yyyy-MM-dd") -endDate $tomorrow.ToString("yyyy-MM-dd")
+  $combined = Merge-EventbriteBackfill -existingEvents @() -cityKey $cityKey -startDate $cityDates.TodayStr -endDate $cityDates.TomorrowStr
+  $combined = Merge-19hzBackfill -existingEvents $combined -cityKey $cityKey -startDate $cityDates.TodayStr -endDate $cityDates.TomorrowStr
 
-  $sorted = $combined | Sort-Object {
+  $sorted = @($combined | Sort-Object {
     if ($_.startDate) { try { [datetime]$_.startDate } catch { [datetime]::MaxValue } } else { [datetime]::MaxValue }
-  }
+  })
 
   if ($sorted.Count -eq 0) { return "[]" }
   $json = $sorted | ConvertTo-Json -Depth 3

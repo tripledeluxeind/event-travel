@@ -165,17 +165,54 @@ function parseDoStuffHtml(html) {
   return events;
 }
 
-function ymd(date) {
+function ymdUTC(date) {
   const pad = (n) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+}
+
+// "Today"/"tomorrow" must be the target city's own calendar date, not the
+// server's - Render runs in UTC, so any time after UTC midnight but before
+// a city's own local midnight is already "tomorrow" to the server while
+// still "today" to that city (e.g. 9pm Pacific is already past midnight
+// UTC) - which silently fetches the wrong two DoStuff day-pages and drops
+// the rest of tonight's real events. Reading the city's own wall-clock date
+// via Intl (DST-aware) instead of the server's `new Date()` avoids that.
+//
+// todayDate is anchored at the city's *actual* local midnight instant (via
+// getUtcOffsetString), not UTC midnight of the date string - those differ
+// by the city's full UTC offset (up to 8h for Pacific), and anchoring at
+// UTC midnight instead let several hours of "yesterday evening, city-local"
+// events bleed into "today" (their UTC instant was already past UTC
+// midnight even though their city-local calendar date hadn't turned over
+// yet) - caught by comparing against real event data, not just in theory.
+// Safe to still read this via UTC getters for URL/cache-key building
+// elsewhere (getDoStuffDaysEvents) because every city here sits behind
+// UTC, so shifting a UTC-midnight timestamp forward by the offset never
+// crosses into the next UTC calendar day.
+function getCityTodayTomorrow(tz) {
+  const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: tz || "UTC" }).format(new Date());
+  const [y, mo, d] = todayStr.split("-").map(Number);
+  const offsetStr = getUtcOffsetString(tz, new Date(Date.UTC(y, mo - 1, d)));
+  const todayDate = new Date(`${todayStr}T00:00:00${offsetStr}`);
+  const tomorrowDate = new Date(todayDate.getTime() + 24 * 60 * 60 * 1000);
+  return { todayDate, tomorrowDate, todayStr, tomorrowStr: ymdUTC(tomorrowDate) };
 }
 
 // Fetches one or more days' pages for a domain, running only the actual
 // cache misses in parallel (a specific-date lookup needs just one page; the
 // default view needs today+tomorrow).
 async function getDoStuffDaysEvents(domain, dates) {
-  const cacheKeyFor = (d) => `${domain}|${ymd(d)}`;
-  const urlFor = (d) => `https://${domain}/events/${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+  // UTC getters, not local ones - `dates` entries are real instants (a
+  // city's own local midnight, converted to UTC by getCityTodayTomorrow),
+  // and their calendar-day component only lines up with what was intended
+  // if read back via the same UTC frame they were built in. Reading local
+  // getters instead happens to still work when the machine running this
+  // *is* UTC (true on Render, where this is actually deployed) but silently
+  // fetches the wrong day for any city whose tz differs from the machine's
+  // own - caught testing this locally on a Pacific-tz dev machine, where it
+  // broke every non-Pacific city.
+  const cacheKeyFor = (d) => `${domain}|${ymdUTC(d)}`;
+  const urlFor = (d) => `https://${domain}/events/${d.getUTCFullYear()}/${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
 
   const missing = dates.filter((d) => !isCacheFresh(cacheKeyFor(d), 15));
 
@@ -213,11 +250,7 @@ async function getUpcomingEventsJson(domain, cityKey, specificDate) {
     return sortByStartDate(matching);
   }
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
-  const todayStr = ymd(today);
-  const tomorrowStr = ymd(tomorrow);
+  const { todayDate: today, tomorrowDate: tomorrow, todayStr, tomorrowStr } = getCityTodayTomorrow(CITY_TZ[cityKey]);
 
   const [all, ebAll, hzAll] = await Promise.all([
     getDoStuffDaysEvents(domain, [today, tomorrow]),
@@ -363,10 +396,7 @@ async function getRenoSceneEventsJson(specificDate) {
     return sortByStartDate(matching);
   }
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayStr = ymd(today);
-  const tomorrowStr = ymd(new Date(today.getTime() + 24 * 60 * 60 * 1000));
+  const { todayDate: today, todayStr, tomorrowStr } = getCityTodayTomorrow(CITY_TZ.reno);
 
   // Concerts don't happen every day here like DoStuff cities' daily listings
   // do, so "today + tomorrow" would come up empty most nights - show every
@@ -549,11 +579,6 @@ async function getDtphxEventsJson(specificDate) {
   upcoming = mergeBackfillResults(upcoming, ebAll, todayStr, tomorrowStr);
   upcoming = mergeBackfillResults(upcoming, hzAll, todayStr, tomorrowStr);
   return sortByStartDate(upcoming);
-}
-
-function ymdUTC(date) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
 }
 
 // ---- Eventbrite backfill for Sports/Food ----
@@ -921,10 +946,7 @@ async function getBackfillOnlyEventsJson(cityKey, specificDate) {
     return sortByStartDate(matching);
   }
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayStr = ymd(today);
-  const tomorrowStr = ymd(new Date(today.getTime() + 24 * 60 * 60 * 1000));
+  const { todayStr, tomorrowStr } = getCityTodayTomorrow(CITY_TZ[cityKey]);
 
   const [ebAll, hzAll] = await Promise.all([
     getEventbriteBackfillPromise(cityKey),
