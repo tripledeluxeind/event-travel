@@ -27,7 +27,7 @@ There are no accounts, no database and no auth. Everything is public data scrape
 - **Free-tier behavior to expect:** Render free instances normally spin down when idle, so the first request after a quiet period can be slow, and the in-memory event cache starts empty after each spin-up or deploy.
 - **Verifying a deploy:** poll the live site for something unique to the change (e.g. a new city's `/api/events?city=xxx` or a changed value), not just a 200.
 - **Local:** `node server.js` -> http://localhost:8838 ; or `serve.ps1` -> http://localhost:8837 (`start-server.ps1` / `stop-server.ps1` wrap it).
-- **Git:** commits are authored as `mikeb@tacotimenw.com` (auto-detected). Commit trailer convention: `Co-Authored-By: Claude ...`. Git prints harmless LF/CRLF warnings on Windows.
+- **Git:** commits are authored as `Mike Bowen <tripledeluxeindustries@gmail.com>` (commits before Oct 12, 2026 used `mikeb@tacotimenw.com`). Commit trailer convention: `Co-Authored-By: Claude ...`. Git prints harmless LF/CRLF warnings on Windows.
 
 ## 4. Current status (as of last commit `7285e87`)
 

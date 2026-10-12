@@ -27,5 +27,6 @@ Personal travel-conditions and events dashboard for one user (Mike). Live at htt
 - **"Today" is the city's date, not the server's.** Render runs in UTC. Use `getCityTodayTomorrow` / `Get-CityTodayTomorrow`, and build day URLs and cache keys with UTC getters.
 - In PowerShell, wrap sorted/filtered results in `@(...)` so one-item results stay arrays.
 - Before adding an event source, verify real overlap with existing sources and real data depth, and report what you actually find, including when something doesn't work.
+- Author commits as `Mike Bowen <tripledeluxeindustries@gmail.com>`.
 - Commit messages explain the "why" and mention any bugs found and fixed along the way.
 - For scope questions Mike tends to give short directional answers ("US cities first, Canada later"). Follow those rather than re-asking.
