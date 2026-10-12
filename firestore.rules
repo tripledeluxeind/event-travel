@@ -1,0 +1,29 @@
+// Reference copy only - paste this into the Firebase console's Firestore
+// "Rules" tab and Publish (this repo has no Firebase CLI deploy pipeline,
+// and shouldn't grow one just for this). This is the ONLY authorization
+// boundary for the optional sync feature; nothing in server.js/serve.ps1
+// or firebase-sync.js enforces this independently. Not a secret even
+// though it's a plain static file in the repo - rules describe what's
+// allowed, they don't grant anything by being readable.
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid} {
+      // request.resource only exists on a write (it's the incoming
+      // document) - applying the same field/shape checks to `read` as well
+      // makes every read fail with "Missing or insufficient permissions"
+      // since request.resource.data is undefined for a get. Reads just
+      // need the ownership check; the shape validation only applies to
+      // writes.
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null
+                  && request.auth.uid == uid
+                  && request.resource.data.keys().hasOnly(['defaultCity', 'defaultCityUpdatedAt', 'ticketedEvents', 'updatedAt'])
+                  && request.resource.data.ticketedEvents is list
+                  && request.resource.data.ticketedEvents.size() < 500;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

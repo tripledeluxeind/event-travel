@@ -1055,7 +1055,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    let filePath = pathname === "/" ? "/index.html" : pathname;
+    let filePath = pathname === "/" ? "/landing.html" : pathname;
     filePath = path.join(root, filePath.replace(/^\/+/, ""));
 
     // Guard against path traversal escaping the project root.
@@ -1063,6 +1063,16 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(403);
       res.end("Forbidden");
       return;
+    }
+
+    // A path with no file extension that isn't an existing static file is
+    // a city-page request (e.g. /sea, /bos) - city.html resolves and
+    // validates the actual slug client-side against the shared CITIES
+    // list in cities.js, so the server doesn't need its own copy of valid
+    // city keys (there isn't one - see the scattered per-source config
+    // maps above).
+    if (pathname !== "/" && !path.extname(filePath) && !fs.existsSync(filePath)) {
+      filePath = path.join(root, "city.html");
     }
 
     fs.readFile(filePath, (err, data) => {
@@ -1075,7 +1085,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, {
         "Content-Type": MIME[ext] || "application/octet-stream",
         // This is a dev server that gets edited often - never let the
-        // browser cache index.html/app.js/style.css across reloads, or a
+        // browser cache city.html/app.js/style.css across reloads, or a
         // code change can look like it "didn't work" when it's just stale.
         "Cache-Control": "no-cache, no-store, must-revalidate",
         Pragma: "no-cache",

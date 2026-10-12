@@ -1,55 +1,41 @@
-// Seattle Travel Conditions and Events — weather + events.
+// Travel Conditions and Events — weather + events for one city at a time.
 // All data comes from free public endpoints, fetched client-side (events go
 // through the local proxy in serve.ps1 since do206.com has no CORS support).
+// CITIES itself lives in cities.js (loaded before this file), shared with
+// landing.html's city grid.
 
-// Keep `domain` in sync with $CityDomains in serve.ps1 for DoStuff Media
-// cities. A city with no primary/domain source can omit `domain` and set
-// `eventsUrl` instead as its "browse everything" link-out - the Events
-// panel still fetches and shows real events for it (server-side, that's
-// whatever 19hz/Eventbrite backfill the city has configured), it just has
-// no single primary site to build direct links or a footer link from.
-// Omitting *both* `domain` and `eventsUrl` is what actually disables the
-// panel for a city with no source of any kind.
-const CITIES = [
-  { key: "sea",  name: "Seattle, WA",     lat: 47.6062, lon: -122.3321, tz: "America/Los_Angeles", domain: "do206.com" },
-  { key: "pdx",  name: "Portland, OR",    lat: 45.5152, lon: -122.6784, tz: "America/Los_Angeles", domain: "dopdx.com" },
-  { key: "atx",  name: "Austin, TX",      lat: 30.2672, lon: -97.7431,  tz: "America/Chicago",     domain: "do512.com" },
-  { key: "nyc",  name: "New York, NY",    lat: 40.7128, lon: -74.0060,  tz: "America/New_York",    domain: "donyc.com" },
-  { key: "chi",  name: "Chicago, IL",     lat: 41.8781, lon: -87.6298,  tz: "America/Chicago",     domain: "do312.com" },
-  { key: "den",  name: "Denver, CO",      lat: 39.7392, lon: -104.9903, tz: "America/Denver",      domain: "do303.com" },
-  { key: "bna",  name: "Nashville, TN",   lat: 36.1627, lon: -86.7816,  tz: "America/Chicago",     domain: "do615.com" },
-  { key: "lax",  name: "Los Angeles, CA", lat: 34.0522, lon: -118.2437, tz: "America/Los_Angeles", domain: "dolosangeles.com" },
-  { key: "bay",  name: "SF Bay Area, CA", lat: 37.7749, lon: -122.4194, tz: "America/Los_Angeles", domain: "dothebay.com" },
-  { key: "reno", name: "Reno, NV",        lat: 39.5296, lon: -119.8138, tz: "America/Los_Angeles", domain: "www.therenoscene.com" },
-  // Arizona doesn't observe daylight saving, so America/Phoenix is a fixed
-  // UTC-7 year-round - unlike every other tz in this list.
-  { key: "phx",  name: "Phoenix, AZ",     lat: 33.4484, lon: -112.0740, tz: "America/Phoenix",     domain: "dtphx.org" },
-  { key: "bos",  name: "Boston, MA",      lat: 42.3601, lon: -71.0589,  tz: "America/New_York",    domain: "do617.com" },
-  // atl/mia/dc/det/oma have no primary source yet (no DoStuff Media
-  // presence, and domain-guessing for a bespoke source came up dry or
-  // incompatible for each - see the 19hz backfill notes in server.js) -
-  // 19hz (EDM) + Eventbrite (Sports/Food) carry these on their own for now,
-  // with eventsUrl as the "browse everything" link-out since there's no
-  // single site that has it all. A proper primary source is a separate
-  // future task per city.
-  { key: "atl",  name: "Atlanta, GA",     lat: 33.7490, lon: -84.3880,  tz: "America/New_York",    eventsUrl: "https://19hz.info/eventlisting_Atlanta.php" },
-  { key: "mia",  name: "Miami, FL",       lat: 25.7617, lon: -80.1918,  tz: "America/New_York",    eventsUrl: "https://19hz.info/eventlisting_Miami.php" },
-  { key: "dc",   name: "Washington, DC",  lat: 38.9072, lon: -77.0369,  tz: "America/New_York",    eventsUrl: "https://19hz.info/eventlisting_DC.php" },
-  { key: "det",  name: "Detroit, MI",     lat: 42.3314, lon: -83.0458,  tz: "America/Detroit",     eventsUrl: "https://19hz.info/eventlisting_Detroit.php" },
-  { key: "oma",  name: "Omaha, NE",       lat: 41.2565, lon: -95.9345,  tz: "America/Chicago",     eventsUrl: "https://19hz.info/eventlisting_Iowa.php" },
-];
+// The city comes from the URL (/<key>, e.g. /sea) - server.js/serve.ps1
+// route any such extensionless path to this same page (see their own
+// routing comments), and this is the one place that actually validates the
+// slug against CITIES. Falls back to the last-saved city only if somehow
+// loaded with no slug at all; redirects to the landing page if neither
+// resolves to a real city (see the guarded call to init() at the bottom).
+function getCityFromPath() {
+  const slug = location.pathname.replace(/^\/+/, "").split("/")[0];
+  return CITIES.find(c => c.key === slug) || null;
+}
 
 function loadSavedCity() {
+  const fromPath = getCityFromPath();
+  if (fromPath) return fromPath;
   const savedKey = localStorage.getItem("cityKey");
-  return CITIES.find(c => c.key === savedKey) || CITIES[0];
+  return CITIES.find(c => c.key === savedKey) || null;
+}
+
+// Records the resolved city as the visitor's saved default - but only on
+// an actual change, not on every reload of the same city, so the Firebase
+// sync's last-write-wins timestamp doesn't get bumped by simply revisiting
+// a page (see auth-ui.js's mergeStates).
+function persistCity(city) {
+  if (localStorage.getItem("cityKey") === city.key) return;
+  const ts = Date.now();
+  localStorage.setItem("cityKey", city.key);
+  localStorage.setItem("cityKeyUpdatedAt", String(ts));
+  window.EventTravelSync?.pushCity?.(city.key, ts);
 }
 
 let currentCity = loadSavedCity();
-
-// Switching cities aborts whatever's still in flight for the previous one -
-// otherwise a slow, late-arriving response can land after the new city's
-// data has already rendered and silently overwrite it.
-let cityAbortController = new AbortController();
+if (currentCity) persistCity(currentCity);
 
 // Last fetched default-view (no specific date picked) events, re-filtered
 // on a timer so the header teaser advances to the next event as time
@@ -84,8 +70,13 @@ function loadTicketedEvents() {
   }
 }
 
+// The one place ticketedEvents is ever written to localStorage - both
+// toggleTicketed() and renderTicketsCard()'s own expiry prune go through
+// here, so hooking the Firestore push here (rather than in toggleTicketed
+// alone) covers both without needing a second hook.
 function saveTicketedEvents() {
   localStorage.setItem("ticketedEvents", JSON.stringify(ticketedEvents));
+  window.EventTravelSync?.pushTickets?.(ticketedEvents);
 }
 
 function isTicketed(key) {
@@ -352,19 +343,15 @@ function travelLevelLabel(level) {
 // ---------- Weather ----------
 
 async function loadWeather() {
-  const signal = cityAbortController.signal;
   try {
     const { lat, lon } = currentCity;
-    const point = await fetchJSON(
-      `https://api.weather.gov/points/${lat},${lon}`,
-      signal
-    );
+    const point = await fetchJSON(`https://api.weather.gov/points/${lat},${lon}`);
     const { forecast, observationStations } = point.properties;
 
     const [forecastData, stations, alertsData] = await Promise.all([
-      fetchJSON(forecast, signal),
-      fetchJSON(observationStations, signal),
-      fetchJSON(`https://api.weather.gov/alerts/active?point=${lat},${lon}`, signal),
+      fetchJSON(forecast),
+      fetchJSON(observationStations),
+      fetchJSON(`https://api.weather.gov/alerts/active?point=${lat},${lon}`),
     ]);
 
     renderAlerts(alertsData);
@@ -377,7 +364,7 @@ async function loadWeather() {
     const stationUrl = stations.features?.[0]?.id;
     if (stationUrl) {
       try {
-        const obs = await fetchJSON(`${stationUrl}/observations/latest`, signal);
+        const obs = await fetchJSON(`${stationUrl}/observations/latest`);
         current = obs.properties;
       } catch (e) {
         // fall back to forecast-only view below
@@ -440,7 +427,6 @@ async function loadWeather() {
     setUpdated("weather");
     refreshAgoLabels();
   } catch (err) {
-    if (err.name === "AbortError") return; // superseded by a city switch
     console.error(err);
     showError("weather-body", "Couldn't load weather right now. Retrying soon.");
   }
@@ -709,11 +695,10 @@ async function loadEvents() {
     return;
   }
 
-  const signal = cityAbortController.signal;
   const browseUrl = currentCity.domain ? `https://${currentCity.domain}/events` : currentCity.eventsUrl;
   const browseLabel = currentCity.domain || "local events calendar";
   try {
-    const rows = await fetchJSON(eventsEndpoint(), signal);
+    const rows = await fetchJSON(eventsEndpoint());
     if (!selectedEventDate) {
       lastUpcomingRows = rows;
       updateNowPlayingTeaser(rows);
@@ -724,10 +709,9 @@ async function loadEvents() {
     setUpdated("events");
     refreshAgoLabels();
   } catch (err) {
-    if (err.name === "AbortError") return; // superseded by a city switch
     console.error(err);
     const hint = location.protocol === "file:"
-      ? `This page was opened as a local file (${location.href}). Events need serve.ps1 - open <strong>http://localhost:8837</strong> in your browser instead of double-clicking index.html.`
+      ? `This page was opened as a local file (${location.href}). Events need serve.ps1 - open <strong>http://localhost:8837</strong> in your browser instead of double-clicking city.html.`
       : "Live event list needs the local server (serve.ps1) running. Start it, then reload this page.";
     document.getElementById("events-body").innerHTML =
       `<div class="empty-state">${hint}<br><a class="ext-link" href="${browseUrl}" target="_blank" rel="noopener">Browse events on ${escapeHtml(browseLabel)} ↗</a></div>`;
@@ -960,37 +944,13 @@ function toggleCityPicker() {
   positionPopoverNear(cityPickerEl, toggleBtn);
 }
 
+// Switching cities is a real navigation now (the city lives in the URL,
+// see getCityFromPath) rather than an in-place state swap - this used to
+// reset a dozen pieces of UI state and re-fetch everything by hand; a
+// normal page load of /<key> now does all of that for free.
 function selectCity(key) {
-  const city = CITIES.find(c => c.key === key);
-  if (!city || city.key === currentCity.key) return;
-
-  cityAbortController.abort();
-  cityAbortController = new AbortController();
-
-  currentCity = city;
-  localStorage.setItem("cityKey", city.key);
-
-  document.getElementById("city-toggle").innerHTML = renderWavyText(city.name);
-  document.title = `${city.name} Travel Conditions and Events`;
-  updateEventsSourceLink(city);
-
-  document.getElementById("weather-body").innerHTML = '<div class="skeleton"></div>';
-  document.getElementById("events-body").innerHTML = '<div class="skeleton"></div>';
-  lastUpcomingRows = [];
-  currentEventsRows = [];
-  setTeaserContent(document.getElementById("now-playing"), "", "");
-  setTeaserContent(document.getElementById("next-event"), "", "");
-  lastUpdated.weather = null;
-  lastUpdated.events = null;
-
-  resetEventsTabs();
-  clearEventsDate();
-  // Re-render so a ticketed event elsewhere now picks up its "· City"
-  // label (or loses it, if you've switched back to its own city).
-  renderTicketsCard();
-
-  loadWeather();
-  loadEvents();
+  if (key === currentCity.key) return;
+  location.href = `/${key}`;
 }
 
 // ---------- Collapsible Weather/Events cards ----------
@@ -1080,8 +1040,8 @@ function initEventsDatePicker() {
 
 // ---------- Utilities ----------
 
-async function fetchJSON(url, signal) {
-  const res = await fetch(url, signal ? { signal } : undefined);
+async function fetchJSON(url) {
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`Request failed: ${url} (${res.status})`);
   return res.json();
 }
@@ -1108,4 +1068,12 @@ function init() {
   setInterval(loadEvents, REFRESH.events);
 }
 
-init();
+// currentCity is null only if the URL's slug (if any) doesn't match a
+// known city AND nothing was ever saved locally - city.html should only
+// ever be reached via a valid /<key> path (see server.js/serve.ps1's
+// routing), so this is a defensive fallback, not the normal case.
+if (currentCity) {
+  init();
+} else {
+  location.replace("/");
+}

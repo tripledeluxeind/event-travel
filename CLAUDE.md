@@ -6,9 +6,10 @@ Personal travel-conditions and events dashboard for one user (Mike). Live at htt
 
 ## Layout
 
-- `index.html`, `style.css`, `app.js`: frontend in plain HTML/CSS/vanilla JS. No framework, no build step.
+- `landing.html` + `landing.js`: the root page (`/`) - a city grid plus a "Continue to <city>" shortcut. `city.html` + `app.js`: the per-city dashboard, served at `/<cityKey>` (e.g. `/sea`). `cities.js`: the shared `CITIES` list both pages use. `style.css`: shared styles. No framework, no build step.
+- `auth-ui.js` + `firebase-sync.js`: the optional Firebase sign-in (Google + email/password) and Firestore sync, used by both pages. Fully client-side - no backend involvement, no new npm dependency. See HANDOFF.md section 1b for the data model and manual Firebase Console setup steps, and `firestore.rules` for the security rules (paste into the Firebase console manually - no CLI deploy pipeline here).
 - `server.js`: the Node backend (built-ins only, zero npm dependencies). This is what runs in production.
-- `serve.ps1` (+ `start-server.ps1` / `stop-server.ps1`): PowerShell mirror of `server.js`, for local Windows testing only.
+- `serve.ps1` (+ `start-server.ps1` / `stop-server.ps1`): PowerShell mirror of `server.js`, for local Windows testing only - and, absent a Node install on this machine, currently the only way to test locally at all.
 
 ## Run locally
 

@@ -25,7 +25,7 @@ $proc.Id | Out-File $pidFile -Encoding ascii
 
 Start-Sleep -Seconds 1
 try {
-  $resp = Invoke-WebRequest -Uri "http://localhost:8837/index.html" -UseBasicParsing -TimeoutSec 3
+  $resp = Invoke-WebRequest -Uri "http://localhost:8837/" -UseBasicParsing -TimeoutSec 3
   Write-Output "Server is up (PID $($proc.Id)) - http://localhost:8837 responded with $($resp.StatusCode)."
 } catch {
   Write-Output "Started PID $($proc.Id), but http://localhost:8837 isn't responding yet."

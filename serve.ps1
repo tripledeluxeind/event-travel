@@ -1110,8 +1110,15 @@ while ($listener.IsListening) {
       $response.ContentLength64 = $bytes.Length
       $response.OutputStream.Write($bytes, 0, $bytes.Length)
     } else {
-      if ($path -eq "/") { $path = "/index.html" }
-      $filePath = Join-Path $root ($path.TrimStart("/"))
+      $filePath = Join-Path $root ($(if ($path -eq "/") { "landing.html" } else { $path.TrimStart("/") }))
+      # A path with no file extension that isn't an existing static file is
+      # a city-page request (e.g. /sea, /bos) - city.html resolves and
+      # validates the actual slug client-side against the shared CITIES
+      # list in cities.js, so the server doesn't need its own copy of
+      # valid city keys. Mirrors the same fallback in server.js.
+      if ($path -ne "/" -and -not [System.IO.Path]::GetExtension($filePath) -and -not (Test-Path $filePath -PathType Leaf)) {
+        $filePath = Join-Path $root "city.html"
+      }
       if (Test-Path $filePath -PathType Leaf) {
         $ext = [System.IO.Path]::GetExtension($filePath)
         $contentType = $mime[$ext]
@@ -1119,7 +1126,7 @@ while ($listener.IsListening) {
         $bytes = [System.IO.File]::ReadAllBytes($filePath)
         $response.ContentType = $contentType
         # This is a local dev server that gets edited often - never let the
-        # browser cache index.html/app.js/style.css across reloads, or a
+        # browser cache city.html/app.js/style.css across reloads, or a
         # code change can look like it "didn't work" when it's just stale.
         $response.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
         $response.Headers.Add("Pragma", "no-cache")

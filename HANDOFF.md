@@ -2,38 +2,58 @@
 
 ## 1. What it is
 
-A personal, single-page dashboard for one user (Mike) that shows, for a chosen US city:
+A personal dashboard that shows, for a chosen US city:
 
 - **Weather card:** current conditions, forecast, and active alerts (alert banner at top).
 - **Events card:** upcoming events for today + tomorrow (or any date picked with the date input), with category tabs: All, Live Music, EDM, Comedy, Community, Sports, Food. Each event has a link (direct ticket link when the source provides one), a venue button that opens Google/Waze/Apple Maps directions, and a checkbox "I've got tickets".
 - **My Tickets card:** events the user checked. Persisted in `localStorage` (`ticketedEvents`), with add-to-calendar buttons (Google, Outlook, and a server-generated `.ics` via `/api/ics` so Apple Calendar works on iPhone). The next ticketed event gets a pulsing yellow glow.
-- **Header:** city picker (last city saved in `localStorage` as `cityKey`), clock, and "Now Playing / Next" ticker for the nearest events. Card titles share a "wavy hover" animation (`.wavy-text` class).
+- **Header:** city picker, clock, and "Now Playing / Next" ticker for the nearest events. Card titles share a "wavy hover" animation (`.wavy-text` class).
+- **Landing page** (`landing.html`, `/`): a city grid (from the shared `CITIES` list in `cities.js`) plus a "Continue to <city>" shortcut if a city was previously picked. Every city has its own page/URL - see section 1a.
 
-There are no accounts, no database and no auth. Everything is public data scraped or fetched on demand.
+No required accounts, no required database and no required auth - the whole app works fully anonymously by design. There's now an *optional* Firebase-backed sign-in (Google + email/password) purely for visitors who want their default city and ticketed events synced across devices/browsers - see section 1b. Nothing about the anonymous path changes if Firebase is never configured, misconfigured, or the visitor never signs in.
+
+## 1a. URL / page structure
+
+- `/` -> `landing.html` (city picker + sign-in entry point).
+- `/<cityKey>` (e.g. `/sea`, `/bos` - the same short keys from `CITIES`) -> `city.html`, the per-city dashboard (weather/events/tickets). This used to be `index.html`/`/` directly, single-page, with the city swapped in place via JS; it's now a real navigation so city pages are shareable/bookmarkable URLs.
+- `city.html` resolves + validates the city from `location.pathname`'s first segment against `CITIES` (see `getCityFromPath()` in `app.js`); an unrecognized slug falls back to the last-saved city, and if neither resolves, redirects to `/`.
+- `cities.js` holds the single shared `CITIES` array (city key/name/lat/lon/tz/domain/eventsUrl) used by both `landing.html` and `city.html` - it used to live only in `app.js`.
+- **Why no backend city-key validation:** `server.js` has no single canonical list of valid city keys (routing to scrapers uses several separate config maps, not one array) - duplicating a key list there just to validate `/sea`-style paths would be a third place to keep in sync. Instead the routing rule in `server.js`/`serve.ps1` is purely mechanical: any path with no file extension that isn't an existing static file is served `city.html`, which does the actual slug validation client-side. This is real serving behavior (not Firebase-specific), so - unlike 1b below - it **is** covered by the "keep server.js/serve.ps1 in parity" rule, and both were changed together.
+
+## 1b. Optional Firebase sync
+
+Fully client-side: Firebase Auth (Google + email/password) + Firestore, both via the Firebase JS SDK loaded as real ES-module imports from Google's CDN (`firebase-sync.js`) - no `firebase-admin`, no new npm dependency, no secrets on Render, no changes to `server.js`/`serve.ps1`. All authorization is enforced by Firestore Security Rules (`firestore.rules`: a user may only read/write their own `users/{uid}` doc) - the web config in `firebase-sync.js` is a public client identifier by Firebase's own design, not a secret, so it's committed as-is (currently placeholder `REPLACE_ME` values - see the manual setup steps below).
+
+- `firebase-sync.js` - pure Firebase SDK wrapper, no DOM. Dynamically `import()`-ed (works from a plain classic script, no `type="module"` tag needed) so a missing/unconfigured/broken Firebase setup never breaks anything else - every failure is caught and the sign-in UI just doesn't render.
+- `auth-ui.js` - the shared sign-in popover + header button, used by both `landing.html` and `city.html`. Owns the merge/reconcile logic on sign-in and exposes `window.EventTravelSync` (only once Firebase has actually loaded) for `app.js` to push local changes - every call site in `app.js` uses `window.EventTravelSync?.foo?.()`, so it's a no-op on a page with no signed-in user or no Firebase at all.
+- **Data model:** one Firestore doc per user, `users/{uid}` = `{ defaultCity, defaultCityUpdatedAt, ticketedEvents: [...same shape as localStorage...], updatedAt }`.
+- **Sync behavior:** on sign-in (including the session Firebase restores automatically on a fresh load), pull the cloud doc, union `ticketedEvents` by `key`, last-write-wins on `defaultCity` via the explicit `defaultCityUpdatedAt` timestamp (bumped in `app.js`'s `persistCity()` only on an actual city change, not every reload), write the merged result back to both `localStorage` and Firestore, and reload the page once if that merge actually changed anything locally. Sign-out leaves `localStorage` untouched; cloud writes just stop until signing back in.
+- **Accepted limitation - no tombstones:** a ticket removed on device A while device B is offline (and still has it locally) can resurrect once B reconnects. Self-heals automatically once the event is in the past (the existing expiry prune in `renderTicketsCard()` already runs everywhere), but not if it's still upcoming. Deliberately not engineered around - whole-array sync has no concept of "this was deliberately deleted" without a change log, which wasn't worth building for a personal-scale app.
+- **Manual Firebase Console setup needed (not automatable - no API access to provision this):** create/select a project; Project settings -> General -> "Your apps" -> add a Web app -> copy the `firebaseConfig` object into `firebase-sync.js` in place of the `REPLACE_ME` placeholders; Authentication -> Sign-in method -> enable Google and Email/Password; Authentication -> Settings -> Authorized domains -> add `event-travel.onrender.com` (localhost is included by default for any port, so both local servers work without extra entries); Firestore Database -> Create database -> production mode -> paste `firestore.rules` into the Rules tab -> Publish.
 
 ## 2. Stack
 
-- **Frontend:** plain HTML/CSS/vanilla JS (`index.html`, `style.css`, `app.js`). No framework, no build step, no bundler.
+- **Frontend:** plain HTML/CSS/vanilla JS (`landing.html`, `city.html`, `cities.js`, `landing.js`, `app.js`, `auth-ui.js`, `firebase-sync.js`, `style.css`). No framework, no build step, no bundler.
 - **Backend:** one Node.js file, `server.js`, using only built-ins (`http`, `fs`, `path`, global `fetch`). **Zero npm dependencies**; `package.json` only declares `node >=18` and `npm start` = `node server.js`.
 - **Weather:** the US National Weather Service API (`api.weather.gov`: `/points`, forecast, nearest station observations, `/alerts/active`), called **directly from the browser** (CORS-enabled, no key). Refreshes every 10 min; events every 20 min.
 - **Events:** scraped server-side (the sources are not CORS-enabled) and cached in memory. See section 5.
-- **Local-dev mirror:** `serve.ps1` is a PowerShell re-implementation of `server.js` (the project started as PowerShell and was ported to Node so it could be deployed). It is **only** for local Windows testing.
+- **Local-dev mirror:** `serve.ps1` is a PowerShell re-implementation of `server.js` (the project started as PowerShell and was ported to Node so it could be deployed). It is **only** for local Windows testing - and, since this machine has no Node.js install, it's currently the only way this project gets tested locally at all.
 
 ## 3. Deployment
 
 - **Where:** Render (free tier) at https://event-travel.onrender.com/ .
 - **How:** the GitHub repo https://github.com/tripledeluxeind/event-travel.git is connected to Render; **every push to `main` auto-deploys** in roughly 1-3 minutes. Render runs `server.js` (`npm start`) and supplies `PORT`; the code reads `process.env.PORT`, defaulting to 8838. Render's dashboard settings (build/start command, plan) were set up earlier outside this session and were not re-checked; confirm there if something looks off.
-- **Server timezone is UTC** (that mattered, see section 6). The server also serves `index.html`/`app.js`/`style.css` with `no-cache` headers.
+- **Server timezone is UTC** (that mattered, see section 6). The server also serves `landing.html`/`city.html`/`app.js`/`style.css`/etc with `no-cache` headers.
 - **Free-tier behavior to expect:** Render free instances normally spin down when idle, so the first request after a quiet period can be slow, and the in-memory event cache starts empty after each spin-up or deploy.
 - **Verifying a deploy:** poll the live site for something unique to the change (e.g. a new city's `/api/events?city=xxx` or a changed value), not just a 200.
 - **Local:** `node server.js` -> http://localhost:8838 ; or `serve.ps1` -> http://localhost:8837 (`start-server.ps1` / `stop-server.ps1` wrap it).
 - **Git:** commits are authored as `Mike Bowen <tripledeluxeindustries@gmail.com>` (commits before Oct 12, 2026 used `mikeb@tacotimenw.com`). Commit trailer convention: `Co-Authored-By: Claude ...`. Git prints harmless LF/CRLF warnings on Windows.
 
-## 4. Current status (as of last commit `7285e87`)
+## 4. Current status
 
-Everything below is shipped and live; working tree was clean.
+Everything below is shipped and live; working tree was clean as of the last commit.
 
-**17 cities** (defined in `CITIES` in `app.js`; keys are used everywhere):
+**17 cities** (defined in `CITIES` in `cities.js`; keys are used everywhere):
 
 | Group | Cities | Primary event source | Also merged in |
 |---|---|---|---|
@@ -41,7 +61,7 @@ Everything below is shipped and live; working tree was clean.
 | Bespoke primary | reno, phx | `therenoscene.com` (concerts only), `dtphx.org` | Eventbrite (reno); Eventbrite + 19hz (phx) |
 | **No primary yet** | atl, mia, dc, det, oma | none | Eventbrite + 19hz only |
 
-Recent history (newest first): `7285e87` fix evening "today's events vanished" bug; `9d3d3df` add Boston/Atlanta/Miami/DC/Detroit/Omaha; `b3383d8` extend 19hz EDM to all existing cities it covers; `37ed02a` EDM tab (Seattle); earlier: iOS calendar fix, tickets card, Comedy tab, direct ticket links, Eventbrite real-time parsing.
+Recent history (newest first): landing page + per-city URLs (`/<key>`) + optional Firebase sign-in/sync (Google + email/password, Firestore-backed); `7285e87` fix evening "today's events vanished" bug; `9d3d3df` add Boston/Atlanta/Miami/DC/Detroit/Omaha; `b3383d8` extend 19hz EDM to all existing cities it covers; `37ed02a` EDM tab (Seattle); earlier: iOS calendar fix, tickets card, Comedy tab, direct ticket links, Eventbrite real-time parsing.
 
 ## 5. Architecture and how events are built
 
