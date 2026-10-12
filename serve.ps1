@@ -1039,7 +1039,7 @@ function Build-IcsContent {
   $lines = @(
     "BEGIN:VCALENDAR"
     "VERSION:2.0"
-    "PRODID:-//Travel Conditions and Events//EN"
+    "PRODID:-//Events and Travel Conditions//EN"
     "BEGIN:VEVENT"
     "UID:$([uri]::EscapeDataString($key))@travel-conditions-events"
     "DTSTAMP:$(Get-IcsUtcStamp -utcDate (Get-Date).ToUniversalTime())"

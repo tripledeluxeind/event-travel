@@ -1,4 +1,4 @@
-// Travel Conditions and Events — weather + events for one city at a time.
+// Events and Travel Conditions — weather + events for one city at a time.
 // All data comes from free public endpoints, fetched client-side (events go
 // through the local proxy in serve.ps1 since do206.com has no CORS support).
 // CITIES itself lives in cities.js (loaded before this file), shared with
@@ -60,6 +60,14 @@ let selectedCategory = "all";
 // for that same reason (currentCity.tz would be wrong once you've
 // switched to a different city than the ticketed event's own).
 let ticketedEvents = loadTicketedEvents();
+
+// Ticket tracking (the My Tickets card and the per-event checkbox) is a
+// signed-in-only feature - starts false so nothing flashes before auth-ui.js
+// confirms the real state, and is kept live via the onAuthStateChange
+// subscription wired up in init() below. The underlying localStorage data
+// is never touched by this flag - signing out just stops showing it, it's
+// still there (and still synced) if you sign back in.
+let signedIn = false;
 
 function loadTicketedEvents() {
   try {
@@ -149,6 +157,13 @@ function buildCalendarLinks(t) {
 }
 
 function renderTicketsCard() {
+  const card = document.getElementById("card-tickets");
+  if (!signedIn) {
+    card.classList.add("hidden");
+    return;
+  }
+  card.classList.remove("hidden");
+
   const now = Date.now();
   const before = ticketedEvents.length;
   ticketedEvents = ticketedEvents.filter(t => !t.startDate || new Date(t.startDate).getTime() >= now);
@@ -648,11 +663,14 @@ function renderEventsList(rows) {
     .map((e, i) => {
       const { gmapsUrl, wazeUrl, appleUrl, place } = directionsLinks(e);
       const checked = isTicketed(eventLink(e));
+      const checkbox = signedIn
+        ? `<input type="checkbox" class="ticket-check" data-index="${i}" ${checked ? "checked" : ""} title="I've got tickets to this" aria-label="Mark ${escapeHtml(e.title)} as got tickets">`
+        : "";
 
       return `
         <div class="list-item">
           <div class="title">
-            <input type="checkbox" class="ticket-check" data-index="${i}" ${checked ? "checked" : ""} title="I've got tickets to this" aria-label="Mark ${escapeHtml(e.title)} as got tickets">
+            ${checkbox}
             <a class="ext-link" href="${eventLink(e)}" target="_blank" rel="noopener">${escapeHtml(e.title)}</a>
           </div>
           <div class="sub">
@@ -890,7 +908,7 @@ function updateEventsSourceLink(city) {
 function initCityPicker() {
   const toggleBtn = document.getElementById("city-toggle");
   toggleBtn.innerHTML = renderWavyText(currentCity.name);
-  document.title = `${currentCity.name} Travel Conditions and Events`;
+  document.title = `${currentCity.name} Events and Travel Conditions`;
   updateEventsSourceLink(currentCity);
 
   cityPickerEl = document.createElement("div");
@@ -1059,7 +1077,16 @@ function init() {
   clearEventsDate();
   initEventsTabs();
   initCollapsibleCards();
-  renderTicketsCard();
+  // window.EventTravelSync is set synchronously by auth-ui.js (loaded
+  // before this file), so this is always safe even though the signed-in
+  // state it reports starts as false until Firebase's own async check
+  // resolves - onAuthStateChange fires once immediately with whatever's
+  // currently known, then again on every real sign-in/out.
+  window.EventTravelSync?.onAuthStateChange?.(signedInNow => {
+    signedIn = signedInNow;
+    renderTicketsCard();
+    renderEventsList(currentEventsRows);
+  });
 
   loadWeather();
   loadEvents();

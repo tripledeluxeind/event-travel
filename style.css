@@ -298,12 +298,17 @@ body {
 
 /* A sibling of .grid, not a grid item - it just stacks above Weather in
    the page's normal flex flow, so it never needs to participate in the
-   Weather/Events 1fr row-sizing logic below. Always visible (an empty
-   state explains the checkbox-in-Events mechanism rather than the card
-   just never appearing for a first-time visitor). */
+   Weather/Events 1fr row-sizing logic below. Signed-in only (see app.js's
+   `signedIn` flag and renderTicketsCard) - shows an empty state rather
+   than hiding itself only once a visitor is actually signed in and has no
+   tickets yet. */
 .ticket-card {
   flex: 0 0 auto;
   margin: 14px 14px 0;
+}
+
+.ticket-card.hidden {
+  display: none;
 }
 
 #tickets-body {
@@ -896,16 +901,20 @@ body {
 .auth-bar {
   display: flex;
   justify-content: flex-end;
-  padding: 6px 16px;
+  /* Top padding matches the ticket card's own top margin below (see
+     .ticket-card), so the gap above the button (to the header's bottom
+     border) and below it (to the card) come out even - no bottom padding
+     here, the card's margin is what creates that gap. */
+  padding: 14px 16px 0;
   flex: 0 0 auto;
 }
 
 .auth-btn {
   font: inherit;
   background: rgba(77, 163, 255, 0.12);
-  border: 1px solid var(--panel-border);
+  border: 1.5px solid #ffffff;
   color: var(--accent);
-  border-radius: 999px;
+  border-radius: 0;
   padding: 5px 12px;
   font-size: 0.78rem;
   cursor: pointer;
@@ -942,7 +951,9 @@ body {
   border: 1px solid var(--panel-border);
   border-radius: var(--radius);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  padding: 16px;
+  /* Extra top padding reserves space for the absolutely-positioned close
+     button below, so it doesn't sit on top of the Google button. */
+  padding: 36px 16px 16px;
 }
 
 .auth-popover.hidden {
@@ -960,22 +971,38 @@ body {
   font-size: 0.9rem;
 }
 
+/* Matches Google's own "Sign in with Google" light/neutral button spec
+   (white fill, #dadce0 border, #3c4043 text, Roboto) rather than this
+   app's usual dark palette - deliberately, so it reads as the real,
+   recognizable Google button rather than a reskinned generic one. */
 .auth-google-btn {
   width: 100%;
-  font: inherit;
-  background: #0f1830;
-  border: 1px solid var(--panel-border);
-  color: var(--text);
-  border-radius: 8px;
-  padding: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 40px;
+  font-family: Roboto, Arial, sans-serif;
+  font-size: 0.875rem;
+  font-weight: 500;
+  background: #ffffff;
+  border: 1px solid #dadce0;
+  color: #3c4043;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 0.88rem;
 }
 
 .auth-google-btn:hover,
 .auth-google-btn:focus-visible {
-  border-color: var(--accent);
+  background: #f8f9fa;
+  box-shadow: 0 1px 2px 0 rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
   outline: none;
+}
+
+.google-g-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
 }
 
 .auth-divider {
@@ -1048,6 +1075,7 @@ body {
 
 .landing-continue {
   margin-bottom: 14px;
+  text-align: center;
 }
 
 .landing-continue.hidden {
@@ -1055,45 +1083,59 @@ body {
 }
 
 .continue-btn {
-  display: block;
-  text-align: center;
-  background: rgba(77, 163, 255, 0.12);
-  border: 1px solid var(--accent);
-  color: var(--text);
-  border-radius: var(--radius);
-  padding: 12px;
+  color: var(--accent);
   font-size: 0.95rem;
-  font-weight: 600;
-  text-decoration: none;
+  text-decoration: underline;
 }
 
 .continue-btn:hover,
 .continue-btn:focus-visible {
-  filter: brightness(1.1);
+  filter: brightness(1.2);
   outline: none;
 }
 
-.landing-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-}
-
-.city-tile {
-  display: block;
-  background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius);
-  padding: 14px;
-  color: var(--text);
-  text-decoration: none;
-  font-weight: 600;
+/* Trigger for the same .nav-picker popover list used to switch cities on
+   a city page (see app.js's initCityPicker) - this just opens that
+   identical list (built in landing.js) rather than an in-page swap. Not
+   a separate box: "Select Your City" itself is the button, styled like
+   the city-name toggle on a city page (self-contained rather than relying
+   on .city-toggle's `font: inherit`, since there's no <h1> ancestor here
+   to inherit a heading size from). */
+#landing-city-picker {
   text-align: center;
+  margin-bottom: 24px;
 }
 
-.city-tile:hover,
-.city-tile:focus-visible {
-  border-color: var(--accent);
-  color: var(--accent);
-  outline: none;
+.landing-city-toggle {
+  font-size: calc(1.5rem + 4pt);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  background: transparent;
+  border: none;
+  color: #ffffff;
+  cursor: pointer;
+  padding: 0;
+  border-bottom: 2px dotted rgba(255, 255, 255, 0.55);
+}
+
+/* Unlike .wavy-text elsewhere (rainbow only on hover), this one is always
+   animated - same color sequence as nyan-glow's hover shadow, applied to
+   the letters' actual fill color instead, continuously, with the usual
+   per-letter stagger so it ripples across the text rather than flashing
+   all at once. Hovering still layers the normal .wavy-text bounce/glow/
+   drip effects on top of this. */
+.landing-city-toggle .letter {
+  animation: landing-title-rainbow 3s linear infinite;
+  animation-delay: calc(var(--i) * 0.06s);
+}
+
+@keyframes landing-title-rainbow {
+  0%   { color: #ff5f5f; }
+  16%  { color: #ff9d4d; }
+  33%  { color: #ffe14d; }
+  50%  { color: #6dff4d; }
+  66%  { color: #4dd8ff; }
+  83%  { color: #a685ff; }
+  100% { color: #ff5f5f; }
 }

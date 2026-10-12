@@ -992,7 +992,7 @@ function buildIcsContent(params) {
   return [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Travel Conditions and Events//EN",
+    "PRODID:-//Events and Travel Conditions//EN",
     "BEGIN:VEVENT",
     `UID:${encodeURIComponent(key)}@travel-conditions-events`,
     `DTSTAMP:${icsUtcStamp(new Date())}`,
