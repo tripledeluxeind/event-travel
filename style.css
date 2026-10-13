@@ -974,6 +974,26 @@ body {
   flex: 0 0 auto;
 }
 
+/* city.html only (landing.html's .auth-bar has no home-link - it's
+   already home). margin-right: auto pushes it to the opposite end from
+   #auth-slot without needing to touch .auth-bar's own justify-content,
+   so landing.html's single-child right alignment is unaffected. */
+.home-link {
+  margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+.home-link:hover,
+.home-link:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+
 .auth-btn {
   font: inherit;
   background: rgba(77, 163, 255, 0.12);
