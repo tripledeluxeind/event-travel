@@ -276,6 +276,17 @@ body {
 
   .teaser-wrap {
     flex-basis: 100%;
+    /* .clock-wrap going `display: contents` above makes this a real flex
+       item of .topbar - a flex item's default min-width is `auto`, not 0,
+       which means it refuses to shrink below its content's own intrinsic
+       width. .teaser-viewport's white-space: nowrap makes a long ticker
+       line's intrinsic width its full unwrapped length, so without this
+       the whole topbar (and page) stretched to fit it instead of letting
+       .teaser-viewport's own overflow: hidden clip it as intended - most
+       visible on a long Now Playing line, e.g. Reno's. Desktop never hits
+       this: .teaser-wrap there sits inside the absolutely-positioned
+       .clock-wrap, outside the flex layout entirely. */
+    min-width: 0;
     margin-top: 8px;
   }
 
