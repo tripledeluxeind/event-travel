@@ -114,13 +114,22 @@ async function fetchUrlsParallel(urls) {
   return results;
 }
 
+// serve.ps1's equivalent uses [System.Net.WebUtility]::HtmlDecode, .NET's
+// real decoder, which already handles every numeric entity form - this is
+// the hand-rolled Node equivalent, so it needs to actually cover the same
+// ground rather than one-off named/numeric cases. Previously only handled
+// the decimal apostrophe form (&#39; / &#039;), not hex (&#x27;) - which is
+// what do206.com's own markup actually uses for venue names like "Tim's
+// Tavern", so it was leaking the literal "&#x27;" into venue text instead
+// of decoding it.
 function htmlDecode(str) {
   return str
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
-    .replace(/&#0?39;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
     .replace(/&nbsp;/g, " ");
 }
 
