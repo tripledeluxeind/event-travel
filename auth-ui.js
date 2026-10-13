@@ -90,13 +90,25 @@
       authListeners.push(cb);
       cb(!!currentUser);
     },
+    // Fire-and-forget by design (callers never await these) - wrapped in
+    // try/catch, not just .catch(), because pushUserDoc can throw
+    // synchronously (e.g. Firestore rejects any field valued `undefined`
+    // immediately, before ever returning a promise) - a .catch() alone
+    // doesn't see that, and letting it escape would unwind straight out
+    // of whatever app.js call site triggered this (see pushUserDoc's own
+    // comment for the bug this caused: a ticket saved to localStorage but
+    // never re-rendered until the next page load).
     pushCity(key, updatedAt) {
       if (!sync || !currentUser) return;
-      sync.pushUserDoc(currentUser.uid, { defaultCity: key, defaultCityUpdatedAt: updatedAt }).catch(() => {});
+      try {
+        sync.pushUserDoc(currentUser.uid, { defaultCity: key, defaultCityUpdatedAt: updatedAt }).catch(() => {});
+      } catch {}
     },
     pushTickets(list) {
       if (!sync || !currentUser) return;
-      sync.pushUserDoc(currentUser.uid, { ticketedEvents: list }).catch(() => {});
+      try {
+        sync.pushUserDoc(currentUser.uid, { ticketedEvents: list }).catch(() => {});
+      } catch {}
     },
   };
 

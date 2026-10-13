@@ -83,5 +83,18 @@ export function pushUserDoc(uid, partial) {
   // updatedAt is plain bookkeeping (and satisfies firestore.rules' field
   // allowlist) - the actual merge decision for defaultCity uses the
   // explicit defaultCityUpdatedAt field passed in via `partial`, not this.
-  return setDoc(doc(db, "users", uid), { ...partial, updatedAt: Date.now() }, { merge: true });
+  //
+  // Firestore's setDoc() throws SYNCHRONOUSLY (not a rejected promise) on
+  // any field whose value is `undefined` - e.g. a ticketedEvents entry's
+  // `hasTime` is undefined for any source that never sets it (only the
+  // Eventbrite backfill sets it explicitly, to false). Caught this because
+  // a synchronous throw here unwinds straight out of app.js's
+  // saveTicketedEvents() before it reaches renderTicketsCard() - the
+  // ticket was saved to localStorage, but the tickets card never
+  // re-rendered to show it until the next full page load. Round-tripping
+  // through JSON strips undefined fields the same way localStorage's own
+  // JSON.stringify already silently does, so this doesn't need to track
+  // every field that might be undefined by hand.
+  const safe = JSON.parse(JSON.stringify({ ...partial, updatedAt: Date.now() }));
+  return setDoc(doc(db, "users", uid), safe, { merge: true });
 }

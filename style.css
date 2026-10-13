@@ -370,6 +370,15 @@ body {
   border-top: 1px solid var(--panel-border);
 }
 
+/* When nothing today is still ahead of real time, there's no .ticket-featured
+   box above this to separate from - skip the divider that would otherwise
+   float at the very top of the card. */
+.ticket-more.flush {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
 .ticket-row {
   display: flex;
   align-items: center;
@@ -396,6 +405,51 @@ body {
 .ticket-row .ticket-when {
   color: var(--text-dim);
   flex-shrink: 0;
+}
+
+/* Collapsed-by-default section for tickets that have gone stale (see
+   isStaleTicket in app.js) - reuses .collapse-icon's base look but
+   rotates the opposite way by default, since this starts collapsed
+   rather than expanded like the main cards. */
+.ticket-past {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.ticket-past-toggle {
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ticket-past-toggle .collapse-icon {
+  transform: rotate(-90deg);
+}
+
+.ticket-past-toggle.expanded .collapse-icon {
+  transform: rotate(0deg);
+}
+
+.ticket-past-list {
+  margin-top: 6px;
+}
+
+.ticket-past-list.hidden {
+  display: none;
+}
+
+.ticket-row-past .ticket-title,
+.ticket-row-past .ticket-title a {
+  color: var(--text-dim);
+  font-weight: 400;
 }
 
 /* The checkbox on each event row in the Events list, used to add it here. */

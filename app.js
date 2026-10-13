@@ -69,6 +69,12 @@ let ticketedEvents = loadTicketedEvents();
 // still there (and still synced) if you sign back in.
 let signedIn = false;
 
+// Whether the "Past" sub-section of My Tickets is expanded - module-level
+// (not re-derived from the DOM) so it survives renderTicketsCard() being
+// called again by the 30s refreshAgoLabels tick while a visitor has it
+// open; starts collapsed since past tickets are secondary information.
+let pastTicketsExpanded = false;
+
 function loadTicketedEvents() {
   try {
     const raw = JSON.parse(localStorage.getItem("ticketedEvents") || "[]");
@@ -116,15 +122,17 @@ function fmtTicketWhen(t) {
   return fmtEventWhen(t.startDate, t.hasTime !== false, t.cityTz || currentCity.tz);
 }
 
-// Prunes anything that's already started (no point featuring - or even
-// keeping - a "got tix" reminder for a show you're already at or missed),
-// then shows the soonest remaining one prominently with anything further
-// out listed compactly below. Shows an explanatory placeholder rather than
-// hiding the card when the list is empty, so a first-time visitor
-// discovers the checkbox-in-the-Events-card mechanism rather than never
-// seeing this card at all. Called after every checkbox toggle and on the
-// same 30s tick that re-checks the header teasers, so it advances live as
-// events start.
+const TICKET_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
+
+// A ticket moves to the grayed-out, collapsed Past section once it's been
+// more than 6 hours since its start - not as soon as it starts (you're
+// probably still there) and not tied to the calendar day rolling over
+// (an early-morning event shouldn't clutter the normal list all the way
+// into the evening). No startDate at all (time TBD) never goes stale.
+function isStaleTicket(t) {
+  return !!t.startDate && Date.now() - new Date(t.startDate).getTime() >= TICKET_STALE_AFTER_MS;
+}
+
 // Nothing in this app tracks a real event *end* time (most sources never
 // give one), so every calendar entry just assumes a 2-hour block from the
 // known start - an approximation, but a far better default than an
@@ -156,6 +164,18 @@ function buildCalendarLinks(t) {
   return { google, outlook, ics };
 }
 
+// Shows the soonest upcoming ticket prominently, anything further out
+// listed compactly below, and - separately - a collapsed, grayed-out
+// "Past" section for tickets that have gone stale (see isStaleTicket
+// above). Nothing is ever deleted from ticketedEvents here any more: past
+// tickets stay around indefinitely (a future "events you've attended"
+// page could read the same data) - only their *display* is demoted.
+// Shows an explanatory placeholder rather than hiding the card when
+// there's nothing at all, so a first-time visitor discovers the
+// checkbox-in-the-Events-card mechanism rather than never seeing this
+// card at all. Called after every checkbox toggle and on the same 30s
+// tick that re-checks the header teasers, so the upcoming->Past transition
+// (and the upcoming list's own ordering) advances live without a reload.
 function renderTicketsCard() {
   const card = document.getElementById("card-tickets");
   if (!signedIn) {
@@ -164,11 +184,6 @@ function renderTicketsCard() {
   }
   card.classList.remove("hidden");
 
-  const now = Date.now();
-  const before = ticketedEvents.length;
-  ticketedEvents = ticketedEvents.filter(t => !t.startDate || new Date(t.startDate).getTime() >= now);
-  if (ticketedEvents.length !== before) saveTicketedEvents();
-
   const body = document.getElementById("tickets-body");
 
   if (!ticketedEvents.length) {
@@ -176,12 +191,6 @@ function renderTicketsCard() {
     return;
   }
 
-  const sorted = [...ticketedEvents].sort((a, b) => {
-    const ta = a.startDate ? new Date(a.startDate).getTime() : Infinity;
-    const tb = b.startDate ? new Date(b.startDate).getTime() : Infinity;
-    return ta - tb;
-  });
-  const [featured, ...rest] = sorted;
   const elsewhere = t => (t.cityName && t.cityName !== currentCity.name ? ` · ${escapeHtml(t.cityName)}` : "");
   const calBtn = t => {
     const { google, outlook, ics } = buildCalendarLinks(t);
@@ -191,28 +200,91 @@ function renderTicketsCard() {
         data-ics="${escapeHtml(ics)}"
         title="Add to calendar" aria-label="Add ${escapeHtml(t.title)} to calendar">🗓️+</button>`;
   };
-
-  const featuredHtml = `
-    <div class="ticket-featured">
-      <div class="ticket-featured-row">
-        <div class="ticket-title"><a class="ext-link" href="${escapeHtml(featured.key)}" target="_blank" rel="noopener">${escapeHtml(featured.title)}</a></div>
-        ${calBtn(featured)}
-      </div>
-      <div class="ticket-when">${fmtTicketWhen(featured)}${featured.venue ? ` · ${escapeHtml(featured.venue)}` : ""}${elsewhere(featured)}</div>
+  const ticketRowHtml = t => `
+    <div class="ticket-row">
+      <span class="ticket-title"><a class="ext-link" href="${escapeHtml(t.key)}" target="_blank" rel="noopener">${escapeHtml(t.title)}</a></span>
+      <span class="ticket-when">${fmtTicketWhen(t)}${elsewhere(t)}</span>
+      ${calBtn(t)}
     </div>`;
 
-  const restHtml = rest.length
-    ? `<div class="ticket-more">${rest
-        .map(t => `
-          <div class="ticket-row">
-            <span class="ticket-title"><a class="ext-link" href="${escapeHtml(t.key)}" target="_blank" rel="noopener">${escapeHtml(t.title)}</a></span>
-            <span class="ticket-when">${fmtTicketWhen(t)}${elsewhere(t)}</span>
-            ${calBtn(t)}
-          </div>`)
-        .join("")}</div>`
-    : "";
+  const upcoming = ticketedEvents.filter(t => !isStaleTicket(t));
+  const past = ticketedEvents.filter(isStaleTicket);
 
-  body.innerHTML = featuredHtml + restHtml;
+  let upcomingHtml;
+  if (!upcoming.length) {
+    upcomingHtml = `<div class="ticket-empty">No upcoming tickets - see Past below.</div>`;
+  } else {
+    const sorted = [...upcoming].sort((a, b) => {
+      const ta = a.startDate ? new Date(a.startDate).getTime() : Infinity;
+      const tb = b.startDate ? new Date(b.startDate).getTime() : Infinity;
+      return ta - tb;
+    });
+
+    // The featured (highlighted) slot goes to the soonest ticket that
+    // hasn't started yet, judged against real time right now - not just
+    // the earliest same-day ticket. A same-day event that's already under
+    // way stays in the plain list below rather than being "featured" as
+    // if it were still next up.
+    const now = Date.now();
+    const featuredIndex = sorted.findIndex(t => !t.startDate || new Date(t.startDate).getTime() >= now);
+
+    if (featuredIndex === -1) {
+      // Every ticket still in "upcoming" (i.e. not yet 6h stale, per
+      // isStaleTicket) has already started - nothing left to feature
+      // right now, just list them plainly.
+      upcomingHtml = `<div class="ticket-more flush">${sorted.map(ticketRowHtml).join("")}</div>`;
+    } else {
+      const featured = sorted[featuredIndex];
+      const rest = sorted.filter((_, i) => i !== featuredIndex);
+
+      const featuredHtml = `
+        <div class="ticket-featured">
+          <div class="ticket-featured-row">
+            <div class="ticket-title"><a class="ext-link" href="${escapeHtml(featured.key)}" target="_blank" rel="noopener">${escapeHtml(featured.title)}</a></div>
+            ${calBtn(featured)}
+          </div>
+          <div class="ticket-when">${fmtTicketWhen(featured)}${featured.venue ? ` · ${escapeHtml(featured.venue)}` : ""}${elsewhere(featured)}</div>
+        </div>`;
+
+      const restHtml = rest.length ? `<div class="ticket-more">${rest.map(ticketRowHtml).join("")}</div>` : "";
+
+      upcomingHtml = featuredHtml + restHtml;
+    }
+  }
+
+  let pastHtml = "";
+  if (past.length) {
+    const pastSorted = [...past].sort((a, b) => {
+      const ta = a.startDate ? new Date(a.startDate).getTime() : -Infinity;
+      const tb = b.startDate ? new Date(b.startDate).getTime() : -Infinity;
+      return tb - ta; // most recent first
+    });
+    pastHtml = `
+      <div class="ticket-past">
+        <button type="button" class="ticket-past-toggle${pastTicketsExpanded ? " expanded" : ""}" id="ticket-past-toggle">
+          <span class="collapse-icon">▾</span> Past (${past.length})
+        </button>
+        <div class="ticket-past-list${pastTicketsExpanded ? "" : " hidden"}" id="ticket-past-list">
+          ${pastSorted
+            .map(t => `
+              <div class="ticket-row ticket-row-past">
+                <span class="ticket-title"><a class="ext-link" href="${escapeHtml(t.key)}" target="_blank" rel="noopener">${escapeHtml(t.title)}</a></span>
+                <span class="ticket-when">${fmtTicketWhen(t)}${elsewhere(t)}</span>
+              </div>`)
+            .join("")}
+        </div>
+      </div>`;
+  }
+
+  body.innerHTML = upcomingHtml + pastHtml;
+
+  if (past.length) {
+    document.getElementById("ticket-past-toggle").addEventListener("click", () => {
+      pastTicketsExpanded = !pastTicketsExpanded;
+      document.getElementById("ticket-past-toggle").classList.toggle("expanded", pastTicketsExpanded);
+      document.getElementById("ticket-past-list").classList.toggle("hidden", !pastTicketsExpanded);
+    });
+  }
 }
 
 // Every source reports its own raw category vocabulary (DoStuff's dozens of
