@@ -301,7 +301,13 @@ function Get-RenoSceneEventsJson {
   if (-not (Test-EventsCacheFresh -cacheKey $cacheKey -ttlMinutes 20)) {
     $succeeded = $false
     try {
-      $resp = Invoke-WebRequest -Uri "https://www.therenoscene.com/concerts-all-ages/" -UseBasicParsing -Headers @{ "User-Agent" = "Mozilla/5.0"; "Accept" = "text/html" } -TimeoutSec 15
+      # The root page is the site's real "All Concerts" listing - was
+      # /concerts-all-ages/ (an "All Ages" filter tab, same page template)
+      # until that turned out to silently drop every show tagged "Under
+      # 18 w Adult" or "Not Posted", which is most of what casino venues
+      # like Silver Legacy book. Same markup either way, so no parser
+      # change needed - just the wrong URL was being fetched.
+      $resp = Invoke-WebRequest -Uri "https://www.therenoscene.com/" -UseBasicParsing -Headers @{ "User-Agent" = "Mozilla/5.0"; "Accept" = "text/html" } -TimeoutSec 15
       $parsed = Parse-RenoSceneHtml -html $resp.Content
       $succeeded = $true
     } catch {

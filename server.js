@@ -384,7 +384,13 @@ async function getRenoSceneEventsJson(specificDate) {
     let succeeded = false;
     let parsed = [];
     try {
-      const res = await fetch("https://www.therenoscene.com/concerts-all-ages/", {
+      // The root page is the site's real "All Concerts" listing - was
+      // /concerts-all-ages/ (an "All Ages" filter tab, same page template)
+      // until that turned out to silently drop every show tagged "Under
+      // 18 w Adult" or "Not Posted", which is most of what casino venues
+      // like Silver Legacy book. Same markup either way, so no parser
+      // change needed - just the wrong URL was being fetched.
+      const res = await fetch("https://www.therenoscene.com/", {
         headers: { "User-Agent": "Mozilla/5.0", Accept: "text/html" },
         signal: AbortSignal.timeout(15000),
       });
